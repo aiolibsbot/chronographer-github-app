@@ -14,7 +14,9 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
       with:
-        python-version: '3.13'
+        # `pre-commit.ci` runs the hooks under Python 3.14; matching it
+        # here is what makes that check reproducible from a readable log:
+        python-version: '3.14'
     - name: Install the linters pinned in the lock file
       run: python -Im pip install -r requirements.txt
     # The hashed lock file cannot be installed together with unpinned

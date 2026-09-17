@@ -67,7 +67,9 @@ repos:
     # `flake8-logging-format` still imports `pkg_resources`, which
     # `setuptools` dropped in v81:
     - setuptools < 81
-    - flake8-pytest-style ~= 1.6.0
+    # `flake8-pytest-style` < v2 reaches for `ast.NameConstant`, which
+    # Python 3.14 dropped:
+    - flake8-pytest-style ~= 2.2.0
     # - flake8-spellcheck ~= 0.28.0; python_version >= "3.8"
     # - flake8-spellcheck ~= 0.26.0; python_version < "3.8"
     language_version: python3

@@ -7,7 +7,7 @@ import pytest
 from unidiff import PatchSet
 
 
-@pytest.fixture()
+@pytest.fixture
 def make_diff():
     """Return a factory turning unified diff text into a patch set."""
     return lambda diff_text: PatchSet(StringIO(diff_text))
@@ -75,7 +75,7 @@ def make_event(event, data):
     return SimpleNamespace(event=event, data=data)
 
 
-@pytest.fixture()
+@pytest.fixture
 def make_gh_api():
     """Return a factory building a fake GitHub API client."""
     return FakeGitHubAPI

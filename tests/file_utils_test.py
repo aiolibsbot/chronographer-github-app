@@ -18,7 +18,7 @@ filename = "CHANGELOG.rst"
 """
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_repo_files(monkeypatch):
     """Serve repository file contents from an in-memory mapping."""
     def _serve(files):
