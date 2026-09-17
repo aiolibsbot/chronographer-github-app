@@ -117,9 +117,11 @@ async def on_pr(event):
         )
     pr_author = pull_request['user']
     pr_labels = {label['name'] for label in pull_request['labels']}
+    pr_labels_list = ', '.join(pr_labels)
+    pr_number = pull_request['number']
     diff_url = (
         f'https://github.com/{repo_slug}'
-        f'/pull/{pull_request["number"]:d}.diff'
+        f'/pull/{pr_number:d}.diff'
     )
     head_branch = pull_request['head']['ref']
     head_sha = pull_request['head']['sha']
@@ -165,7 +167,7 @@ async def on_pr(event):
     logger.info(
         'Checking if `%s` label is present among these PR labels: `%s`.',
         repo_skip_label,
-        ', '.join(pr_labels) or 'NO LABELS',
+        pr_labels_list or 'NO LABELS',
     )
     if repo_skip_label in pr_labels:
         logger.info(
@@ -187,7 +189,7 @@ async def on_pr(event):
                         'title':
                             f'{checks_summary_title_prefix!s}'
                             'Nothing to do — change note not required',
-                        'text': f'Labels: {", ".join(pr_labels)}',
+                        'text': f'Labels: {pr_labels_list!s}',
                         'summary':
                             'Heeeeey!'
                             '\n\n'
@@ -262,11 +264,12 @@ async def on_pr(event):
         'Check suite ID is %s',
         resp['check_suite']['id'],
     )
+    check_run_id = resp['id']
     logger.info(
         'Check run ID is %s',
-        resp['id'],
+        check_run_id,
     )
-    check_runs_updates_uri = f'{check_runs_base_uri}/{resp["id"]:d}'
+    check_runs_updates_uri = f'{check_runs_base_uri}/{check_run_id:d}'
 
     logger.info("Here's the diff URL: %s", diff_url)
     diff_text = await gh_api.getitem(
@@ -315,7 +318,8 @@ async def on_pr(event):
     )
 
     if news_fragments_added and fragment_provided_label is not None:
-        labels_url = f'{pull_request["issue_url"]}/labels'
+        issue_url = pull_request['issue_url']
+        labels_url = f'{issue_url!s}/labels'
         await gh_api.post(
             labels_url,
             preview_api_version='symmetra',
