@@ -57,6 +57,20 @@ paths:  # relative modified file paths that do or don't need changelog mention
 ...
 ```
 
+# What counts as a change note
+
+A file matching the towncrier fragment pattern satisfies the check when
+the pull request adds it, and also when it merely edits one that is
+already there -- amending an existing fragment lands in the changelog
+just the same.
+
+Towncrier can be told to count a change note without ever showing its
+contents (`showcontent = false`, typically for a `trivial` type). Text
+put into such a file is silently dropped at build time, so Chronographer
+does not accept it: the check run fails asking for the file to be
+emptied, or for a type whose body does get rendered.
+
+
 # Creating change notes from the check run
 
 A failing check run offers up to three buttons, one per change note type,

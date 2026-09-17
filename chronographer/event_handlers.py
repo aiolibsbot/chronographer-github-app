@@ -319,10 +319,11 @@ async def on_pr(event):
         towncrier_config=towncrier_config,
     )
 
-    news_fragments_added = [
-        f for f in diff
-        if f.is_added_file and _tc_fragment_re.search(f.path)
-    ]
+    news_fragments_added, overfull_change_notes = collect_change_notes(
+        diff,
+        _tc_fragment_re,
+        contentless_change_types(towncrier_config),
+    )
     news_fragment_types = {
         _tc_fragment_re.search(f.path).group('fragment_type')
         for f in news_fragments_added
@@ -385,6 +386,7 @@ async def on_pr(event):
         fragment_re=_tc_fragment_re,
         unmet_change_type_requirements=unmet_change_type_requirements,
         label_origins=label_origins,
+        overfull_change_notes=overfull_change_notes,
     )
 
     update_check_req = attr.evolve(
@@ -693,7 +695,7 @@ def as_change_type_set(accepted_types):
 def build_check_result(
         *, title_prefix, epilogue, fragments_added, fragments_required,
         fragment_re, unmet_change_type_requirements=None,
-        label_origins=None,
+        label_origins=None, overfull_change_notes=(),
 ):
     """Compose the Checks API conclusion and output for a scanned PR."""
     if fragments_added and unmet_change_type_requirements:
@@ -743,6 +745,30 @@ def build_check_result(
                 f'{epilogue!s}',
         }
 
+    if overfull_change_notes:
+        dropped = '\n'.join(
+            f'* `{note.path!s}`' for note in overfull_change_notes
+        )
+        return 'failure', {
+            'title':
+                f'{title_prefix!s}'
+                'History fragment expected to be empty',
+            'text':
+                'The following news fragments carry text that would '
+                f'never be rendered: {overfull_change_notes!r}',
+            'summary':
+                'Almost! Towncrier is configured to count the change '
+                'note types below without showing their contents '
+                '(`showcontent = false`), so the text in these files '
+                'will not reach the 📝 changelog:'
+                '\n\n'
+                f'{dropped!s}'
+                '\n\n'
+                'Either empty the file or pick a change note type whose '
+                'body gets rendered.'
+                f'{epilogue!s}',
+        }
+
     if not fragments_required:
         return 'neutral', {
             'title':
@@ -789,6 +815,54 @@ def change_note_types(towncrier_config):
         tuple(t['directory'] for t in towncrier_config.get('type', ()))
         or FALLBACK_CHANGE_TYPES
     )
+
+
+def contentless_change_types(towncrier_config):
+    """Return the change types towncrier renders without their body."""
+    return frozenset(
+        change_type['directory']
+        for change_type in towncrier_config.get('type', ())
+        if not change_type.get('showcontent', True)
+    )
+
+
+def adds_change_note_text(patched_file):
+    """Tell whether this diff entry adds any non-blank line."""
+    return any(
+        line.value.strip()
+        for hunk in patched_file
+        for line in hunk
+        if line.is_added
+    )
+
+
+def collect_change_notes(diff, fragment_re, contentless_types=frozenset()):
+    """Split the change notes in a diff into accepted and over-full ones.
+
+    Editing an existing fragment reaches the changelog just like adding
+    a new one, so a modified file counts as long as it brings in text.
+
+    A note of a type towncrier is told to render without its body
+    (``showcontent = false``) only counts while it stays empty -- any
+    text it carries would be dropped from the changelog silently.
+    """
+    accepted = []
+    overfull = []
+    for patched_file in diff:
+        match = fragment_re.search(patched_file.path)
+        if match is None:
+            continue
+
+        carries_text = adds_change_note_text(patched_file)
+        if not (patched_file.is_added_file or carries_text):
+            continue
+
+        is_overfull = carries_text and (
+            match.group('fragment_type') in contentless_types
+        )
+        (overfull if is_overfull else accepted).append(patched_file)
+
+    return accepted, overfull
 
 
 def enforce_name_settings(repo_config):

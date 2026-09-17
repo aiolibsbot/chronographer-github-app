@@ -18,6 +18,8 @@ from chronographer.event_handlers import (
     build_check_result,
     change_note_base_dir,
     change_note_types,
+    collect_change_notes,
+    contentless_change_types,
     enforce_name_settings,
     collect_requirement_labels,
     compile_towncrier_fragments_regex,
@@ -33,10 +35,21 @@ from .conftest import (
     ADDED_FRAGMENT_DIFF,
     FakeGitHubAPI,
     CHANGELOG_ADDITION_DIFF,
+    EMPTY_CONTENTLESS_FRAGMENT_DIFF,
+    FILLED_CONTENTLESS_FRAGMENT_DIFF,
     make_event,
+    MODIFIED_FRAGMENT_DIFF,
     REMOVED_FRAGMENT_DIFF,
     SOURCE_CHANGE_DIFF,
 )
+
+
+CONTENTLESS_TOWNCRIER_CONFIG = {
+    'type': [
+        {'directory': 'bugfix', 'showcontent': True},
+        {'directory': 'trivial', 'showcontent': False},
+    ],
+}
 
 
 def make_fragment_re(name_settings=None, towncrier_config=None):
@@ -779,3 +792,116 @@ def test_check_result_stays_quiet_about_the_pull_requests_own_labels():
     )
 
     assert '`enhancement` wants' in output['summary']
+
+
+def test_contentless_change_types_lists_hidden_bodies():
+    """Report the types towncrier renders without their contents."""
+    assert contentless_change_types(CONTENTLESS_TOWNCRIER_CONFIG) == {
+        'trivial',
+    }
+
+
+def test_contentless_change_types_defaults_to_showing():
+    """Treat a type without ``showcontent`` as rendering its body."""
+    assert not contentless_change_types({'type': [{'directory': 'misc'}]})
+
+
+@pytest.mark.parametrize(
+    ('diff_text', 'expected'),
+    [
+        (ADDED_FRAGMENT_DIFF, True),
+        (MODIFIED_FRAGMENT_DIFF, True),
+        (REMOVED_FRAGMENT_DIFF, False),
+        (SOURCE_CHANGE_DIFF, False),
+    ],
+)
+def test_collect_change_notes_accepts_touched_fragments(
+        make_diff, diff_text, expected,
+):
+    """Count both new and edited change notes, but not deleted ones."""
+    accepted, overfull = collect_change_notes(
+        make_diff(diff_text), make_fragment_re(),
+    )
+
+    assert bool(accepted) is expected
+    assert not overfull
+
+
+def test_collect_change_notes_accepts_empty_contentless_note(make_diff):
+    """Let a ``showcontent = false`` note through while it is empty."""
+    fragment_re = make_fragment_re(
+        towncrier_config=CONTENTLESS_TOWNCRIER_CONFIG,
+    )
+
+    accepted, overfull = collect_change_notes(
+        make_diff(EMPTY_CONTENTLESS_FRAGMENT_DIFF),
+        fragment_re,
+        contentless_change_types(CONTENTLESS_TOWNCRIER_CONFIG),
+    )
+
+    assert [note.path for note in accepted] == ['news/123.trivial']
+    assert not overfull
+
+
+def test_collect_change_notes_flags_filled_contentless_note(make_diff):
+    """Single out a ``showcontent = false`` note carrying text."""
+    fragment_re = make_fragment_re(
+        towncrier_config=CONTENTLESS_TOWNCRIER_CONFIG,
+    )
+
+    accepted, overfull = collect_change_notes(
+        make_diff(FILLED_CONTENTLESS_FRAGMENT_DIFF),
+        fragment_re,
+        contentless_change_types(CONTENTLESS_TOWNCRIER_CONFIG),
+    )
+
+    assert not accepted
+    assert [note.path for note in overfull] == ['news/123.trivial']
+
+
+def test_collect_change_notes_keeps_filled_note_of_rendered_type(make_diff):
+    """Accept text in a type whose body does reach the changelog."""
+    accepted, overfull = collect_change_notes(
+        make_diff(ADDED_FRAGMENT_DIFF),
+        make_fragment_re(towncrier_config=CONTENTLESS_TOWNCRIER_CONFIG),
+        contentless_change_types(CONTENTLESS_TOWNCRIER_CONFIG),
+    )
+
+    assert [note.path for note in accepted] == ['news/123.bugfix']
+    assert not overfull
+
+
+
+def test_build_check_result_reports_overfull_note(make_diff):
+    """Fail the run explaining that the note body would be dropped."""
+    overfull = list(make_diff(FILLED_CONTENTLESS_FRAGMENT_DIFF))
+
+    conclusion, output = build_check_result(
+        title_prefix='',
+        epilogue='',
+        fragments_added=[],
+        fragments_required=True,
+        fragment_re=make_fragment_re(),
+        overfull_change_notes=overfull,
+    )
+
+    assert conclusion == 'failure'
+    assert output['title'] == 'History fragment expected to be empty'
+    assert 'news/123.trivial' in output['summary']
+
+
+def test_build_check_result_prefers_a_valid_fragment(make_diff):
+    """Stay green when a usable note sits next to an over-full one."""
+    conclusion, _output = build_check_result(
+        title_prefix='',
+        epilogue='',
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
+        fragments_required=True,
+        fragment_re=make_fragment_re(),
+        overfull_change_notes=list(
+            make_diff(FILLED_CONTENTLESS_FRAGMENT_DIFF),
+        ),
+    )
+
+    assert conclusion == 'success'
+

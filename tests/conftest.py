@@ -33,6 +33,34 @@ deleted file mode 100644
 """
 
 
+MODIFIED_FRAGMENT_DIFF = """\
+diff --git a/news/123.bugfix b/news/123.bugfix
+--- a/news/123.bugfix
++++ b/news/123.bugfix
+@@ -1 +1,2 @@
+ Fixed a thing
++and another one
+"""
+
+
+EMPTY_CONTENTLESS_FRAGMENT_DIFF = """\
+diff --git a/news/123.trivial b/news/123.trivial
+new file mode 100644
+--- /dev/null
++++ b/news/123.trivial
+"""
+
+
+FILLED_CONTENTLESS_FRAGMENT_DIFF = """\
+diff --git a/news/123.trivial b/news/123.trivial
+new file mode 100644
+--- /dev/null
++++ b/news/123.trivial
+@@ -0,0 +1 @@
++This text never reaches the changelog
+"""
+
+
 CHANGELOG_ADDITION_DIFF = """\
 diff --git a/NEWS.rst b/NEWS.rst
 --- a/NEWS.rst
