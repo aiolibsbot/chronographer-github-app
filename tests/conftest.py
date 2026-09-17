@@ -46,6 +46,16 @@ new file mode 100644
 """
 
 
+SLUG_FRAGMENT_DIFF = """\
+diff --git a/news/smth-else.bugfix b/news/smth-else.bugfix
+new file mode 100644
+--- /dev/null
++++ b/news/smth-else.bugfix
+@@ -0,0 +1 @@
++Fixed a thing
+"""
+
+
 REMOVED_FRAGMENT_DIFF = """\
 diff --git a/news/123.bugfix b/news/123.bugfix
 deleted file mode 100644

@@ -29,6 +29,7 @@ from .conftest import (
     FILLED_CONTENTLESS_FRAGMENT_DIFF,
     make_event,
     make_fragment_re,
+    SLUG_FRAGMENT_DIFF,
 )
 
 
@@ -69,14 +70,14 @@ def test_is_blacklisted(actor, blacklist, expected):
     assert is_blacklisted(actor, blacklist) is expected
 
 
-def test_check_result_reports_success_when_fragments_added():
+def test_check_result_reports_success_when_fragments_added(make_diff):
     """Check that added fragments produce a successful check run."""
     conclusion, output = build_check_result(
         title_prefix='chng: ',
         epilogue='',
-        fragments_added=['news/123.bugfix'],
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
         fragments_required=True,
-        fragment_re='<re>',
+        fragment_re=make_fragment_re(),
     )
 
     assert conclusion == 'success'
@@ -158,14 +159,14 @@ def test_change_type_requirement_accepts_a_bare_string():
     )
 
 
-def test_check_result_fails_on_the_wrong_fragment_type():
+def test_check_result_fails_on_the_wrong_fragment_type(make_diff):
     """Check that a fragment of an unwanted type fails the check run."""
     conclusion, output = build_check_result(
         title_prefix='chng: ',
         epilogue='epilogue',
-        fragments_added=['news/123.bugfix'],
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
         fragments_required=True,
-        fragment_re='<re>',
+        fragment_re=make_fragment_re(),
         unmet_change_type_requirements={
             'enhancement': ['contrib', 'feature'],
         },
@@ -584,14 +585,14 @@ def test_an_unreachable_linked_issue_is_ignored(make_gh_api):
     ) == {'bug': 13}
 
 
-def test_check_result_names_the_issue_a_demand_came_from():
+def test_check_result_names_the_issue_a_demand_came_from(make_diff):
     """Check that an inherited demand says which issue asked for it."""
     _conclusion, output = build_check_result(
         title_prefix='chng: ',
         epilogue='',
-        fragments_added=['news/123.bugfix'],
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
         fragments_required=True,
-        fragment_re='<re>',
+        fragment_re=make_fragment_re(),
         unmet_change_type_requirements={'enhancement': ['feature']},
         label_origins={'enhancement': 12},
     )
@@ -599,14 +600,16 @@ def test_check_result_names_the_issue_a_demand_came_from():
     assert '`enhancement` (from #12) wants' in output['summary']
 
 
-def test_check_result_stays_quiet_about_the_pull_requests_own_labels():
+def test_check_result_stays_quiet_about_the_pull_requests_own_labels(
+        make_diff,
+):
     """Check that a label the PR carries itself gets no provenance."""
     _conclusion, output = build_check_result(
         title_prefix='chng: ',
         epilogue='',
-        fragments_added=['news/123.bugfix'],
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
         fragments_required=True,
-        fragment_re='<re>',
+        fragment_re=make_fragment_re(),
         unmet_change_type_requirements={'enhancement': ['feature']},
         label_origins={'enhancement': None},
     )
@@ -646,3 +649,30 @@ def test_build_check_result_prefers_a_valid_fragment(make_diff):
     )
 
     assert conclusion == 'success'
+
+
+def test_check_result_links_the_issue_a_fragment_names(make_diff):
+    """Point the reader at the issue the change note file refers to."""
+    _conclusion, output = build_check_result(
+        title_prefix='',
+        epilogue='',
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
+        fragments_required=True,
+        fragment_re=make_fragment_re(),
+    )
+
+    assert '* `news/123.bugfix` -- #123' in output['text']
+
+
+def test_check_result_leaves_a_slug_fragment_unlinked(make_diff):
+    """Keep quiet when the name part is not an issue number."""
+    _conclusion, output = build_check_result(
+        title_prefix='',
+        epilogue='',
+        fragments_added=list(make_diff(SLUG_FRAGMENT_DIFF)),
+        fragments_required=True,
+        fragment_re=make_fragment_re(),
+    )
+
+    assert '* `news/smth-else.bugfix`' in output['text']
+    assert ' -- #' not in output['text']

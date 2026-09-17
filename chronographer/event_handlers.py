@@ -657,6 +657,21 @@ def as_change_type_set(accepted_types):
     )
 
 
+def describe_change_notes(fragments, fragment_re):
+    """List the change notes found, naming the issues they refer to.
+
+    Towncrier only treats the part before the first dot as an issue
+    reference when it is a number, and so does this: a slug like
+    ``smth-else`` names nothing to link to.
+    """
+    lines = []
+    for fragment in fragments:
+        issue_number = fragment_re.search(fragment.path).group('issue_number')
+        reference = f' -- #{issue_number!s}' if issue_number.isdigit() else ''
+        lines.append(f'* `{fragment.path!s}`{reference!s}')
+    return '\n'.join(lines)
+
+
 # Every argument here is keyword-only and names one independent input of
 # the rendered check run, so bundling them would only add indirection:
 # pylint: disable-next=too-many-arguments
@@ -684,8 +699,9 @@ def build_check_result(
                 f'{title_prefix!s}'
                 'History fragments of the wrong type',
             'text':
-                'The following news fragments found: '
-                f'{fragments_added!r}'
+                'The following news fragments found:'
+                '\n\n'
+                f'{describe_change_notes(fragments_added, fragment_re)!s}'
                 '\n\n'
                 f'Pattern: {fragment_re}',
             'summary':
@@ -700,8 +716,9 @@ def build_check_result(
         return 'success', {
             'title': f'{title_prefix!s}Good to go',
             'text':
-                'The following news fragments found: '
-                f'{fragments_added!r}'
+                'The following news fragments found:'
+                '\n\n'
+                f'{describe_change_notes(fragments_added, fragment_re)!s}'
                 '\n\n'
                 f'Pattern: {fragment_re}',
             'summary':
