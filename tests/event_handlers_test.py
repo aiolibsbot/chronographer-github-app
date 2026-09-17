@@ -9,6 +9,7 @@ from chronographer.event_handlers import (
     compile_towncrier_fragments_regex,
     is_a_release_pr,
     is_blacklisted,
+    is_org_allowed,
     requires_changelog,
     resolve_pull_request,
 )
@@ -17,6 +18,7 @@ from .conftest import (
     ADDED_FRAGMENT_DIFF,
     CHANGELOG_ADDITION_DIFF,
     make_event,
+    make_pull_request_event,
     REMOVED_FRAGMENT_DIFF,
     SOURCE_CHANGE_DIFF,
 )
@@ -299,3 +301,74 @@ def test_pull_request_event_needs_no_api_call(make_gh_api):
 
     assert pull_request is PULL_REQUEST_PAYLOAD
     assert not gh_api.requested_urls
+
+
+@pytest.mark.parametrize(
+    ('allowlist', 'owner_login', 'expected'),
+    [
+        (None, 'acme', True),
+        ('', 'acme', True),
+        ('   ', 'acme', True),
+        ('psf', 'psf', True),
+        ('psf', 'acme', False),
+        ('psf,aio-libs', 'aio-libs', True),
+        ('psf, aio-libs', 'aio-libs', True),
+        ('psf\naio-libs', 'aio-libs', True),
+        ('psf', 'PSF', True),
+        ('PSF', 'psf', True),
+        ('psf', 'psf-releng', False),
+        ('webknjaz', 'webknjaz', True),
+    ],
+)
+def test_is_org_allowed(monkeypatch, allowlist, owner_login, expected):
+    """Check how the deployment-side allow list is parsed and matched."""
+    if allowlist is None:
+        monkeypatch.delenv('CHRONOGRAPHER_ALLOWED_ORGS', raising=False)
+    else:
+        monkeypatch.setenv('CHRONOGRAPHER_ALLOWED_ORGS', allowlist)
+
+    assert is_org_allowed(owner_login) is expected
+
+
+def test_unserved_account_is_told_so_and_costs_no_diff(monkeypatch, run_on_pr):
+    """Check that a PR outside of the allow list stops at one check run."""
+    monkeypatch.setenv('CHRONOGRAPHER_ALLOWED_ORGS', 'psf')
+
+    gh_api = run_on_pr(make_pull_request_event(owner_login='acme'))
+
+    assert len(gh_api.posted) == 1
+    check_runs_uri, check_run = gh_api.posted[0]
+    assert check_runs_uri == '/repos/acme/widget/check-runs'
+    assert check_run['status'] == 'completed'
+    assert check_run['conclusion'] == 'neutral'
+    assert 'acme' in check_run['output']['text']
+    assert not gh_api.requested_urls  # the diff was never downloaded
+    assert not gh_api.patched  # and the run was never revisited
+
+
+def test_served_account_is_processed_as_usual(monkeypatch, run_on_pr):
+    """Check that an allow-listed account reaches the diff inspection."""
+    monkeypatch.setenv('CHRONOGRAPHER_ALLOWED_ORGS', 'acme, psf')
+    diff_url = 'https://github.com/acme/widget/pull/7.diff'
+
+    gh_api = run_on_pr(
+        make_pull_request_event(owner_login='acme'),
+        responses={diff_url: SOURCE_CHANGE_DIFF},
+    )
+
+    assert gh_api.posted[0][1]['status'] == 'queued'
+    assert diff_url in gh_api.requested_urls
+
+
+def test_an_empty_allowlist_serves_everyone(monkeypatch, run_on_pr):
+    """Check that the default deployment stays open to all accounts."""
+    monkeypatch.delenv('CHRONOGRAPHER_ALLOWED_ORGS', raising=False)
+    diff_url = 'https://github.com/acme/widget/pull/7.diff'
+
+    gh_api = run_on_pr(
+        make_pull_request_event(owner_login='acme'),
+        responses={diff_url: SOURCE_CHANGE_DIFF},
+    )
+
+    assert gh_api.posted[0][1]['status'] == 'queued'
+    assert diff_url in gh_api.requested_urls

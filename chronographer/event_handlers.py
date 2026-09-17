@@ -2,6 +2,7 @@
 from datetime import datetime
 from io import StringIO
 import logging
+import os
 import re
 
 import attr
@@ -88,6 +89,15 @@ async def on_install(
         RUNTIME_CONTEXT.app_installation,
     )
 
+    account_login = installation['account']['login']
+    if not is_org_allowed(account_login):
+        logger.warning(
+            'The App has been installed into `%s` which this deployment '
+            'is not configured to serve; its pull requests will be '
+            'reported as not served',
+            account_login,
+        )
+
 
 @process_event_actions(
     'pull_request',
@@ -140,6 +150,56 @@ async def on_pr(event):
         'check-title-prefix',
         f'{checks_api_name!s}: ',
     )
+
+    # The repository config is read before this gate on purpose: a
+    # repository whose branch protection requires a renamed check would
+    # be stuck forever on a check run that never appears under the
+    # expected name. One config read is cheaper than that.
+    repo_owner_login = event_repository['owner']['login']
+    if not is_org_allowed(repo_owner_login):
+        logger.info(
+            'Skipping this event because `%s` is not among the accounts '
+            'this deployment is configured to serve',
+            repo_owner_login,
+        )
+        await gh_api.post(
+            check_runs_base_uri,
+            preview_api_version='antiope',
+            data=to_gh_query(
+                NewCheckRequest(
+                    head_branch, head_sha,
+                    name=checks_api_name,
+                    status='completed',
+                    started_at=f'{datetime.utcnow().isoformat()}Z',
+                    completed_at=f'{datetime.utcnow().isoformat()}Z',
+                    conclusion='neutral',
+                    output={
+                        'title':
+                            f'{checks_summary_title_prefix!s}'
+                            'Nothing to do — account not served',
+                        'text':
+                            'This deployment restricts itself to the '
+                            'accounts listed in its '
+                            '`CHRONOGRAPHER_ALLOWED_ORGS` setting and '
+                            f'`{repo_owner_login!s}` is not one of them.',
+                        'summary':
+                            'Heeeeey!'
+                            '\n\n'
+                            'This particular instance of Chronographer only '
+                            'keeps the chronicles of a few accounts and '
+                            f'`@{repo_owner_login!s}` is not among them, so '
+                            'there is nothing for it to do here.'
+                            '\n\n'
+                            'Ask whoever operates this deployment to add the '
+                            'account to the allow list, or run '
+                            '[your own Chronographer]('
+                            'https://github.com/sanitizers'
+                            '/chronographer-github-app).',
+                    },
+                ),
+            ),
+        )
+        return  # Interrupt the webhook event processing
 
     checks_summary_epilogue = ''
 
@@ -492,6 +552,27 @@ async def compile_towncrier_fragments_regex(name_settings, towncrier_config):
             postfix_pattern=fragment_filename_suffix,
         ),
     )
+
+
+def is_org_allowed(owner_login):
+    """Tell whether this deployment is willing to serve the account.
+
+    The allow list is a deployment-side setting, not a repository one:
+    a repository must not be able to opt itself into an instance that
+    was not meant to serve it. An unset or empty
+    ``CHRONOGRAPHER_ALLOWED_ORGS`` leaves the deployment open to
+    everyone, which is what most instances want.
+
+    Entries are separated by commas and/or whitespace and matched
+    case-insensitively against the repository owner login, so personal
+    accounts can be listed next to organizations.
+    """
+    allowed_logins = frozenset(
+        login.lower() for login
+        in os.environ.get('CHRONOGRAPHER_ALLOWED_ORGS', '')
+        .replace(',', ' ').split()
+    )
+    return not allowed_logins or owner_login.lower() in allowed_logins
 
 
 def is_blacklisted(actor, blacklist):

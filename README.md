@@ -41,6 +41,26 @@ paths:  # relative modified file paths that do or don't need changelog mention
 ...
 ```
 
+# Configuring the deployment
+
+Some settings belong to whoever runs this app rather than to the
+repositories it watches, so they are read from the environment instead
+of `.github/chronographer.yml`:
+
+* `CHRONOGRAPHER_ALLOWED_ORGS` — restrict the deployment to a fixed set
+  of accounts, for example when an instance is meant to serve one
+  foundation only. Entries are account logins separated by commas
+  and/or whitespace, matched case-insensitively, and personal accounts
+  work just as well as organizations:
+  ```console
+  CHRONOGRAPHER_ALLOWED_ORGS='psf, aio-libs sanitizers'
+  ```
+  Pull requests in any other account get a single neutral check run
+  saying that this deployment does not serve them, and nothing else is
+  downloaded or inspected. Leaving the variable unset or empty — the
+  default — keeps the deployment open to everyone, which is what a
+  self-hosted instance normally wants.
+
 # Running the app
 ## Local development
 1. Copy a dotenv config template: `cp -v .env{.example,}`
