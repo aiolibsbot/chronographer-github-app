@@ -41,6 +41,28 @@ paths:  # relative modified file paths that do or don't need changelog mention
 ...
 ```
 
+# Configuring the deployment
+
+Some settings belong to whoever runs this app rather than to the
+repositories it watches, so they are read from the environment instead
+of `.github/chronographer.yml`:
+
+* `CHRONOGRAPHER_HTTP_CACHE_ENTRIES` — how many GitHub API `GET`
+  responses to keep around for revalidation. The repository config, the
+  towncrier config and the pull request diff are re-read on every event
+  a pull request emits, so the app remembers their `ETag`s and asks
+  GitHub whether they changed; an unchanged one comes back as an empty
+  `304` that costs no rate limit budget. The entries are shared by
+  every event the process handles and the least recently used one is
+  dropped once the cache is full. It defaults to `128`; raise it for a
+  busy deployment, or set it to `0` to send plain unconditional
+  requests:
+  ```console
+  CHRONOGRAPHER_HTTP_CACHE_ENTRIES=512
+  ```
+  Nothing served from this cache can be stale — an entry is only ever
+  used to *ask* GitHub, which stays free to answer with fresh contents.
+
 # Running the app
 ## Local development
 1. Copy a dotenv config template: `cp -v .env{.example,}`

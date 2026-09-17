@@ -19,6 +19,7 @@ from .file_utils import (
     get_chronographer_config,
     get_towncrier_config,
 )
+from .http_cache import cache_gh_api_gets
 from .labels import (
     LABEL_PROVIDED,
     LABEL_SKIP,
@@ -108,7 +109,7 @@ async def on_pr(event):
     repo_slug = event_repository['full_name']
     check_runs_base_uri = f'/repos/{repo_slug}/check-runs'
 
-    gh_api = RUNTIME_CONTEXT.app_installation_client
+    gh_api = cache_gh_api_gets(RUNTIME_CONTEXT.app_installation_client)
 
     pull_request = await resolve_pull_request(event, repo_slug, gh_api)
     if pull_request is None:
