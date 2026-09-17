@@ -49,8 +49,10 @@ def test_label_names_are_configurable():
         ('failure', set(), [LABEL_REQUIRED], []),
         ('failure', {LABEL_PROVIDED}, [LABEL_REQUIRED], [LABEL_PROVIDED]),
         ('action_required', set(), [LABEL_PROVIDED], []),
-        ('neutral', {LABEL_PROVIDED, LABEL_REQUIRED}, [],
-         [LABEL_PROVIDED, LABEL_REQUIRED]),
+        (
+            'neutral', {LABEL_PROVIDED, LABEL_REQUIRED}, [],
+            [LABEL_PROVIDED, LABEL_REQUIRED],
+        ),
         ('success', {LABEL_PROVIDED}, [], []),
     ],
 )
@@ -94,12 +96,14 @@ def test_applying_changes_posts_once_and_deletes_each(make_gh_api):
     """Check that the Issues API is asked for the planned changes only."""
     gh_api = make_gh_api()
 
-    asyncio.run(apply_label_changes(
-        gh_api,
-        issue_url='/repos/o/r/issues/1',
-        add=[LABEL_PROVIDED],
-        remove=[LABEL_REQUIRED, 'needs work'],
-    ))
+    asyncio.run(
+        apply_label_changes(
+            gh_api,
+            issue_url='/repos/o/r/issues/1',
+            add=[LABEL_PROVIDED],
+            remove=[LABEL_REQUIRED, 'needs work'],
+        ),
+    )
 
     assert gh_api.post_calls == [
         ('/repos/o/r/issues/1/labels', {'labels': [LABEL_PROVIDED]}),
@@ -114,9 +118,11 @@ def test_an_empty_plan_makes_no_requests(make_gh_api):
     """Check that nothing to do means no API traffic."""
     gh_api = make_gh_api()
 
-    asyncio.run(apply_label_changes(
-        gh_api, issue_url='/repos/o/r/issues/1', add=[], remove=[],
-    ))
+    asyncio.run(
+        apply_label_changes(
+            gh_api, issue_url='/repos/o/r/issues/1', add=[], remove=[],
+        ),
+    )
 
     assert gh_api.post_calls == []
     assert gh_api.delete_calls == []
@@ -140,9 +146,11 @@ def test_relabeling_reports_the_latest_application(make_gh_api):
         ),
     })
 
-    assert asyncio.run(label_applied_at(
-        gh_api, issue_url='/repos/o/r/issues/1', label=LABEL_MORE,
-    )) == '2020-01-03T00:00:00Z'
+    assert asyncio.run(
+        label_applied_at(
+            gh_api, issue_url='/repos/o/r/issues/1', label=LABEL_MORE,
+        ),
+    ) == '2020-01-03T00:00:00Z'
 
 
 def test_a_removed_label_reports_no_application(make_gh_api):
@@ -154,9 +162,11 @@ def test_a_removed_label_reports_no_application(make_gh_api):
         ),
     })
 
-    assert asyncio.run(label_applied_at(
-        gh_api, issue_url='/repos/o/r/issues/1', label=LABEL_MORE,
-    )) is None
+    assert asyncio.run(
+        label_applied_at(
+            gh_api, issue_url='/repos/o/r/issues/1', label=LABEL_MORE,
+        ),
+    ) is None
 
 
 def check_head_moved(make_gh_api, *, labeled_at, committed_at):
@@ -170,13 +180,15 @@ def check_head_moved(make_gh_api, *, labeled_at, committed_at):
             'commit': {'committer': {'date': committed_at}},
         },
     })
-    return asyncio.run(head_moved_since_label(
-        gh_api,
-        repo_slug='o/r',
-        issue_url='/repos/o/r/issues/1',
-        head_sha='deadbeef',
-        label=LABEL_MORE,
-    ))
+    return asyncio.run(
+        head_moved_since_label(
+            gh_api,
+            repo_slug='o/r',
+            issue_url='/repos/o/r/issues/1',
+            head_sha='deadbeef',
+            label=LABEL_MORE,
+        ),
+    )
 
 
 def test_a_push_after_the_label_answers_it(make_gh_api):

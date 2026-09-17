@@ -106,8 +106,10 @@ async def label_applied_at(gh_api, *, issue_url, label):
     return applied_at
 
 
-async def head_moved_since_label(gh_api, *, repo_slug, issue_url, head_sha,
-                                 label):
+async def head_moved_since_label(
+    gh_api, *, repo_slug, issue_url, head_sha,
+    label,
+):
     """Tell whether the head branch was pushed to after the labeling.
 
     This is the only evidence GitHub offers that a contributor answered
