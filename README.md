@@ -52,6 +52,14 @@ paths:  # relative modified file paths that do or don't need changelog mention
    ```
 3. `python3 -m chronographer`
 
+## Checking that the app boots
+`./test_boot.sh` starts the app against a throwaway GitHub App identity under
+whatever `python` is on `PATH`. Authenticating that identity is *expected* to
+fail — what the script checks is everything that has to work before that: the
+dotenv config loading, the event loop bootstrap, the `anyio` runner, the
+aiohttp client session and the GitHub App wrapper. It is how to tell whether a
+given interpreter can run this app at all, without deploying it.
+
 # Known issues/limitations
 
 * Re-requesting a check run from Checks page in PRs doesn't always work.
