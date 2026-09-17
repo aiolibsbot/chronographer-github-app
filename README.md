@@ -44,6 +44,10 @@ infer-labels-from-linked-issues: false  # default: `false`
 
 labels:
   fragment-provided: change note detected  # default: `bot:chronographer:provided`, disable with `~`
+  fragment-required: change note wanted  # default: `bot:chronographer:required`, disable with `~`
+  # The label a maintainer puts on to ask for the change notes to be
+  # extended.  The bot reads it, never sets it:
+  fragment-more: change note needs work  # default: `bot:chronographer:more`, disable with `~`
   skip-changelog: skip news  # default: `bot:chronographer:skip`
 
 # Labels that demand a change note of a particular towncrier type.  A
@@ -77,6 +81,31 @@ contents (`showcontent = false`, typically for a `trivial` type). Text
 put into such a file is silently dropped at build time, so Chronographer
 does not accept it: the check run fails asking for the file to be
 emptied, or for a type whose body does get rendered.
+
+
+# Managing intentions with labels
+
+The check run verdict is mirrored onto the pull request as a label, so
+that the state of a change note is visible from an issue listing and can
+be filtered on. Exactly one of the two is ever set: `fragment-provided`
+once a change note is in place, `fragment-required` while one is still
+owed. A pull request that needs no change note at all -- a release
+preparation, say -- carries neither, and both labels come off again as
+soon as the verdict changes. Setting either name to `~` turns that half
+off.
+
+A maintainer who wants an existing change note reworded, split up or
+joined by another one puts the `fragment-more` label on. The check run
+then reports `action_required` instead of passing, which holds the pull
+request back without pretending the change note is missing. Chronographer
+never sets this label itself.
+
+Nothing records how much more was wanted, so the demand is cleared by the
+next push to the head branch: the label comes off, and the run reports on
+whatever the branch looks like then. A maintainer who is still not
+satisfied puts it back on.
+
+Writing labels needs the App to hold the `issues: write` permission.
 
 
 # Creating change notes from the check run

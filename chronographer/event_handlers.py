@@ -29,8 +29,10 @@ from .change_notes import (
 )
 from .file_utils import get_chronographer_config
 from .labels import (
-    LABEL_PROVIDED,
-    LABEL_SKIP,
+    apply_label_changes,
+    head_moved_since_label,
+    plan_label_changes,
+    resolve_label_names,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,12 +171,8 @@ async def on_pr(event):
             external_docs_url,
         ))
 
-    labels_config = repo_config.get('labels', {})
-    fragment_provided_label = labels_config.get(
-        'fragment-provided',
-        LABEL_PROVIDED,
-    )
-    repo_skip_label = labels_config.get('skip-changelog', LABEL_SKIP)
+    label_names = resolve_label_names(repo_config)
+    repo_skip_label = label_names['skip']
 
     logger.info(
         'Checking if `%s` label is present among these PR labels: `%s`.',
@@ -326,19 +324,6 @@ async def on_pr(event):
         else 'absent',
     )
 
-    if news_fragments_added and fragment_provided_label is not None:
-        issue_url = pull_request['issue_url']
-        labels_url = f'{issue_url!s}/labels'
-        await gh_api.post(
-            labels_url,
-            preview_api_version='symmetra',
-            data={
-                'labels': [
-                    fragment_provided_label,
-                ],
-            },
-        )
-
     news_fragments_required = requires_changelog(
         diff,
         _tc_fragment_re,
@@ -370,6 +355,16 @@ async def on_pr(event):
         for change_type in as_change_type_set(accepted_types)
     })
 
+    more_label = label_names['more']
+    more_requested = more_label is not None and more_label in pr_labels
+    more_pending = more_requested and not await head_moved_since_label(
+        gh_api,
+        repo_slug=repo_slug,
+        issue_url=pull_request['issue_url'],
+        head_sha=head_sha,
+        label=more_label,
+    )
+
     conclusion, check_output = build_check_result(
         title_prefix=checks_summary_title_prefix,
         epilogue=checks_summary_epilogue,
@@ -379,6 +374,20 @@ async def on_pr(event):
         unmet_change_type_requirements=unmet_change_type_requirements,
         label_origins=label_origins,
         overfull_change_notes=overfull_change_notes,
+        more_requested=more_pending,
+    )
+
+    labels_added, labels_removed = plan_label_changes(
+        conclusion=conclusion,
+        current_labels=pr_labels,
+        names=label_names,
+        drop_more=more_requested and not more_pending,
+    )
+    await apply_label_changes(
+        gh_api,
+        issue_url=pull_request['issue_url'],
+        add=labels_added,
+        remove=labels_removed,
     )
 
     update_check_req = attr.evolve(
@@ -678,7 +687,7 @@ def describe_change_notes(fragments, fragment_re):
 def build_check_result(
         *, title_prefix, epilogue, fragments_added, fragments_required,
         fragment_re, unmet_change_type_requirements=None,
-        label_origins=None, overfull_change_notes=(),
+        label_origins=None, overfull_change_notes=(), more_requested=False,
 ):
     """Compose the Checks API conclusion and output for a scanned PR."""
     if fragments_added and unmet_change_type_requirements:
@@ -709,6 +718,27 @@ def build_check_result(
                 'a different kind of change note:'
                 '\n\n'
                 f'{demands!s}'
+                f'{epilogue!s}',
+        }
+
+    if fragments_added and more_requested:
+        return 'action_required', {
+            'title':
+                f'{title_prefix!s}'
+                'A maintainer asked for more',
+            'text':
+                'The following news fragments found:'
+                '\n\n'
+                f'{describe_change_notes(fragments_added, fragment_re)!s}'
+                '\n\n'
+                f'Pattern: {fragment_re}',
+            'summary':
+                'This change is recorded, but a maintainer labelled the '
+                'pull request asking for the change notes to be extended '
+                '-- reworded, split up, or joined by another one.'
+                '\n\n'
+                'Read the review comments for what exactly is missing. '
+                'The label comes off by itself once you push again.'
                 f'{epilogue!s}',
         }
 

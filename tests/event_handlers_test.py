@@ -676,3 +676,34 @@ def test_check_result_leaves_a_slug_fragment_unlinked(make_diff):
 
     assert '* `news/smth-else.bugfix`' in output['text']
     assert ' -- #' not in output['text']
+
+
+def test_check_result_asks_for_more_when_a_maintainer_does(make_diff):
+    """Check that a standing ``more`` demand holds back a green run."""
+    conclusion, output = build_check_result(
+        title_prefix='chng: ',
+        epilogue='',
+        fragments_added=list(make_diff(ADDED_FRAGMENT_DIFF)),
+        fragments_required=True,
+        fragment_re=make_fragment_re(),
+        more_requested=True,
+    )
+
+    assert conclusion == 'action_required'
+    assert output['title'] == 'chng: A maintainer asked for more'
+    assert 'news/123.bugfix' in output['text']
+
+
+def test_a_more_demand_needs_a_change_note_to_hold_back():
+    """Check that ``more`` does not dress up a missing change note."""
+    conclusion, output = build_check_result(
+        title_prefix='chng: ',
+        epilogue='',
+        fragments_added=[],
+        fragments_required=True,
+        fragment_re=make_fragment_re(),
+        more_requested=True,
+    )
+
+    assert conclusion == 'failure'
+    assert output['title'] == 'chng: History fragments missing'
