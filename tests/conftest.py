@@ -1,6 +1,7 @@
 """Shared test helpers."""
 
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
 from unidiff import PatchSet
@@ -53,3 +54,28 @@ diff --git a/src/app.py b/src/app.py
 -x = 1
 +x = 2
 """
+
+
+class FakeGitHubAPI:  # pylint: disable=too-few-public-methods
+    """Record ``getitem()`` calls and replay canned responses."""
+
+    def __init__(self, responses=None):
+        """Store the URL-to-payload mapping to serve."""
+        self.responses = responses or {}
+        self.requested_urls = []
+
+    async def getitem(self, url, **_kwargs):
+        """Return the canned payload registered for ``url``."""
+        self.requested_urls.append(url)
+        return self.responses[url]
+
+
+def make_event(event, data):
+    """Stand in for an octomachinery webhook event."""
+    return SimpleNamespace(event=event, data=data)
+
+
+@pytest.fixture()
+def make_gh_api():
+    """Return a factory building a fake GitHub API client."""
+    return FakeGitHubAPI

@@ -67,9 +67,11 @@ $ python -Im pre_commit run --all-files
 
 # Known issues/limitations
 
-* Re-requesting a check run from Checks page in PRs doesn't always work.
-  For a mysterious reason, [sometimes GitHub attaches a list of PRs to the events but sometimes that list is empty
-  `[complain here]`](
-  https://github.community/t5/GitHub-API-Development-and/BUG-Sometimes-rerequested-check-run-events-don-t-contain-a-PR/m-p/26964/thread-id/2189
-  ). The link is historic and the discussion contents seem to have been
-  lost during GitHub's platform migrations.
+* Re-requesting a check run used to be documented here as failing "for a
+  mysterious reason" whenever GitHub sent an empty list of PRs with the
+  event. It is not mysterious: the `pull_requests` array of a check suite
+  only lists pull requests whose head branch lives in *this* repository, so
+  it is empty for every PR sent from a fork. The entries it does carry are
+  stub objects without `user`, `labels` or `issue_url`. Both cases are now
+  handled by looking the pull request up through the API instead of reading
+  it out of the webhook payload.

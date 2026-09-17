@@ -107,16 +107,13 @@ async def on_pr(event):
     event_repository = event.data['repository']
     repo_slug = event_repository['full_name']
     check_runs_base_uri = f'/repos/{repo_slug}/check-runs'
-    if event.event == 'pull_request':
-        pull_request = event.data['pull_request']
-    elif event.event == 'check_run':
-        pull_request = (
-            event.data['check_run']['check_suite']['pull_requests'][0]
-        )
-    else:  # `check_suite`; no other event reaches this handler
-        pull_request = (
-            event.data['check_suite']['pull_requests'][0]
-        )
+
+    gh_api = RUNTIME_CONTEXT.app_installation_client
+
+    pull_request = await resolve_pull_request(event, repo_slug, gh_api)
+    if pull_request is None:
+        return  # Interrupt the webhook event processing
+
     pr_author = pull_request['user']
     pr_labels = {label['name'] for label in pull_request['labels']}
     pr_labels_list = ', '.join(pr_labels)
@@ -128,8 +125,6 @@ async def on_pr(event):
     head_branch = pull_request['head']['ref']
     head_sha = pull_request['head']['sha']
     repo_default_branch = event_repository['default_branch']
-
-    gh_api = RUNTIME_CONTEXT.app_installation_client
 
     repo_config = await get_chronographer_config(ref=repo_default_branch)
     paths_config = repo_config.get(
@@ -362,6 +357,48 @@ async def on_pr(event):
 
     logger.info('got %s event', event.event)
     logger.info('gh_api=%s', gh_api)
+
+
+async def resolve_pull_request(event, repo_slug, gh_api):
+    """Look up the full pull request payload an event points at.
+
+    ``pull_request`` events carry it inline.  The Checks API only
+    embeds stub pull request objects that lack ``user``, ``labels``
+    and ``issue_url`` -- and it leaves that list empty altogether when
+    the head branch lives in a fork -- so re-requested checks need an
+    extra round trip.
+
+    Returns ``None`` when no pull request is associated with the event.
+    """
+    if event.event == 'pull_request':
+        return event.data['pull_request']
+
+    check_suite = (
+        event.data['check_run']['check_suite'] if event.event == 'check_run'
+        else event.data['check_suite']
+    )
+
+    pull_request_stubs = check_suite['pull_requests']
+    if pull_request_stubs:
+        pr_number = pull_request_stubs[0]['number']
+        return await gh_api.getitem(f'/repos/{repo_slug}/pulls/{pr_number:d}')
+
+    # Fork head branches never show up in ``pull_requests``, but the
+    # head commit still knows which pull requests it belongs to:
+    head_sha = check_suite['head_sha']
+    associated_pull_requests = await gh_api.getitem(
+        f'/repos/{repo_slug}/commits/{head_sha}/pulls',
+    )
+    if associated_pull_requests:
+        return associated_pull_requests[0]
+
+    logger.info(
+        'Skipping the %s event because no pull request is associated '
+        'with the head commit %s',
+        event.event,
+        head_sha,
+    )
+    return None
 
 
 def build_check_result(

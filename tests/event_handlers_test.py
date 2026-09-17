@@ -1,4 +1,4 @@
-"""Tests for the pure helpers backing the webhook event handlers."""
+"""Tests for the helpers backing the webhook event handlers."""
 
 import asyncio
 
@@ -10,11 +10,13 @@ from chronographer.event_handlers import (
     is_a_release_pr,
     is_blacklisted,
     requires_changelog,
+    resolve_pull_request,
 )
 
 from .conftest import (
     ADDED_FRAGMENT_DIFF,
     CHANGELOG_ADDITION_DIFF,
+    make_event,
     REMOVED_FRAGMENT_DIFF,
     SOURCE_CHANGE_DIFF,
 )
@@ -218,3 +220,82 @@ def test_added_fragment_is_detected(make_diff):
         patched_file.path for patched_file in diff
         if patched_file.is_added_file and fragment_re.search(patched_file.path)
     ] == ['news/123.bugfix']
+
+
+PULL_REQUEST_PAYLOAD = {
+    'number': 1,
+    'user': {'login': 'webknjaz', 'type': 'User'},
+    'labels': [],
+    'head': {'ref': 'feature', 'sha': 'f2114ef'},
+}
+
+
+@pytest.mark.parametrize(
+    'event_name',
+    ['check_run', 'check_suite'],
+)
+def test_rerequested_check_fetches_the_full_pull_request(
+        event_name, make_gh_api,
+):
+    """Check that embedded PR stubs get replaced by the real payload."""
+    check_suite = {'head_sha': 'f2114ef', 'pull_requests': [{'number': 1}]}
+    data = {
+        'check_run': {'check_suite': check_suite},
+    } if event_name == 'check_run' else {'check_suite': check_suite}
+    pulls_url = '/repos/sanitizers/chronographer/pulls/1'
+    gh_api = make_gh_api({pulls_url: PULL_REQUEST_PAYLOAD})
+
+    pull_request = asyncio.run(
+        resolve_pull_request(
+            make_event(event_name, data),
+            'sanitizers/chronographer',
+            gh_api,
+        ),
+    )
+
+    assert pull_request is PULL_REQUEST_PAYLOAD
+    assert gh_api.requested_urls == [pulls_url]
+
+
+def test_rerequested_check_from_a_fork_looks_up_the_head_commit(make_gh_api):
+    """Check that an empty stub list falls back to the head commit."""
+    commit_pulls_url = '/repos/sanitizers/chronographer/commits/f2114ef/pulls'
+    gh_api = make_gh_api({commit_pulls_url: [PULL_REQUEST_PAYLOAD]})
+    event = make_event(
+        'check_suite',
+        {'check_suite': {'head_sha': 'f2114ef', 'pull_requests': []}},
+    )
+
+    pull_request = asyncio.run(
+        resolve_pull_request(event, 'sanitizers/chronographer', gh_api),
+    )
+
+    assert pull_request is PULL_REQUEST_PAYLOAD
+    assert gh_api.requested_urls == [commit_pulls_url]
+
+
+def test_check_without_any_pull_request_is_skipped(make_gh_api):
+    """Check that a branch-only check run resolves to nothing."""
+    commit_pulls_url = '/repos/sanitizers/chronographer/commits/f2114ef/pulls'
+    gh_api = make_gh_api({commit_pulls_url: []})
+    event = make_event(
+        'check_suite',
+        {'check_suite': {'head_sha': 'f2114ef', 'pull_requests': []}},
+    )
+
+    assert asyncio.run(
+        resolve_pull_request(event, 'sanitizers/chronographer', gh_api),
+    ) is None
+
+
+def test_pull_request_event_needs_no_api_call(make_gh_api):
+    """Check that ``pull_request`` payloads are used as they arrive."""
+    gh_api = make_gh_api()
+    event = make_event('pull_request', {'pull_request': PULL_REQUEST_PAYLOAD})
+
+    pull_request = asyncio.run(
+        resolve_pull_request(event, 'sanitizers/chronographer', gh_api),
+    )
+
+    assert pull_request is PULL_REQUEST_PAYLOAD
+    assert not gh_api.requested_urls
