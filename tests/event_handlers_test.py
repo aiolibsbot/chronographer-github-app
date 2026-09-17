@@ -19,7 +19,9 @@ from chronographer.event_handlers import (
     change_note_base_dir,
     change_note_types,
     enforce_name_settings,
+    collect_requirement_labels,
     compile_towncrier_fragments_regex,
+    find_linked_issue_numbers,
     find_unmet_change_type_requirements,
     is_a_release_pr,
     is_blacklisted,
@@ -646,3 +648,134 @@ def test_a_rejected_push_is_reported_on_the_check_run(monkeypatch):
     assert url == '/repos/sanitizers/chronographer/check-runs/42'
     assert data['conclusion'] == 'failure'
     assert 'news/7.bugfix' in data['output']['summary']
+
+
+@pytest.mark.parametrize(
+    ('pr_body', 'expected'),
+    [
+        ('Closes #12', [12]),
+        ('fixes GH-7', [7]),
+        ('Resolved: #3', [3]),
+        (
+            'Fixes https://github.com/sanitizers/chronographer/issues/42',
+            [42],
+        ),
+        ('Closes sanitizers/chronographer#5', [5]),
+        ('Closes someone/else#5', []),
+        (
+            'Fixes https://github.com/someone/else/issues/42',
+            [],
+        ),
+        ('Related to #9', []),
+        ('Closes #4 and closes #4', [4]),
+        ('Closes #4, fixes #2', [2, 4]),
+        (None, []),
+        ('', []),
+    ],
+)
+def test_linked_issue_numbers(pr_body, expected):
+    """Check which issue references count as closing this PR."""
+    assert find_linked_issue_numbers(
+        pr_body, 'sanitizers/chronographer',
+    ) == expected
+
+
+def collect_labels(gh_api, *, labels, body='', requirements=None):
+    """Drive the label collection against a fake GitHub API."""
+    return asyncio.run(
+        collect_requirement_labels(
+            gh_api,
+            repo_slug='sanitizers/chronographer',
+            pull_request={
+                'labels': [{'name': name} for name in labels],
+                'body': body,
+            },
+            requirements=(
+                requirements if requirements is not None
+                else {'enhancement': ['feature'], 'bug': ['bugfix']}
+            ),
+        ),
+    )
+
+
+def test_own_voting_label_silences_the_linked_issues(make_gh_api):
+    """Check that a PR carrying a voting label speaks for itself."""
+    gh_api = make_gh_api()
+
+    label_origins = collect_labels(
+        gh_api, labels=['enhancement'], body='Closes #12',
+    )
+
+    assert label_origins == {'enhancement': None}
+    assert not gh_api.requested_urls
+
+
+def test_labels_are_inherited_from_the_linked_issues(make_gh_api):
+    """Check that a PR with no voting label borrows the issue's."""
+    issue_url = '/repos/sanitizers/chronographer/issues/12'
+    gh_api = make_gh_api({issue_url: {'labels': [{'name': 'enhancement'}]}})
+
+    label_origins = collect_labels(
+        gh_api, labels=['needs-review'], body='Closes #12',
+    )
+
+    assert label_origins == {'needs-review': None, 'enhancement': 12}
+    assert gh_api.requested_urls == [issue_url]
+
+
+def test_own_labels_outrank_the_inherited_ones(make_gh_api):
+    """Check that a label held by both sides stays the PR's own.
+
+    ``needs-review`` is not a voting label, so the lookup still
+    happens -- but its origin must not become the linked issue.
+    """
+    issue_url = '/repos/sanitizers/chronographer/issues/12'
+    gh_api = make_gh_api({issue_url: {'labels': [{'name': 'needs-review'}]}})
+
+    assert collect_labels(
+        gh_api, labels=['needs-review'], body='Closes #12',
+    ) == {'needs-review': None}
+
+
+def test_an_unreachable_linked_issue_is_ignored(make_gh_api):
+    """Check that a dead reference does not sink the whole check run."""
+    gh_api = make_gh_api({
+        '/repos/sanitizers/chronographer/issues/12':
+            gidgethub.BadRequest(status_code=HTTPStatus.NOT_FOUND),
+        '/repos/sanitizers/chronographer/issues/13':
+            {'labels': [{'name': 'bug'}]},
+    })
+
+    assert collect_labels(
+        gh_api, labels=[], body='Closes #12, fixes #13',
+    ) == {'bug': 13}
+
+
+def test_check_result_names_the_issue_a_demand_came_from():
+    """Check that an inherited demand says which issue asked for it."""
+    _conclusion, output = build_check_result(
+        title_prefix='chng: ',
+        epilogue='',
+        fragments_added=['news/123.bugfix'],
+        fragments_required=True,
+        fragment_re='<re>',
+        unmet_change_type_requirements={'enhancement': ['feature']},
+        label_origins={'enhancement': 12},
+    )
+
+    assert '`enhancement` (from #12) wants' in output['summary']
+
+
+def test_check_result_stays_quiet_about_the_pull_requests_own_labels():
+    """Check that a label the PR carries itself gets no provenance."""
+    _conclusion, output = build_check_result(
+        title_prefix='chng: ',
+        epilogue='',
+        fragments_added=['news/123.bugfix'],
+        fragments_required=True,
+        fragment_re='<re>',
+        unmet_change_type_requirements={'enhancement': ['feature']},
+        label_origins={'enhancement': None},
+    )
+
+    assert '`enhancement` wants' in output['summary']

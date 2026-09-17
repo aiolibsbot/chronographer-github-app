@@ -68,9 +68,16 @@ class FakeGitHubAPI:
         self.patch_calls = []
 
     async def getitem(self, url, **_kwargs):
-        """Return the canned payload registered for ``url``."""
+        """Return the canned payload registered for ``url``.
+
+        A registered exception is raised instead, which is how a test
+        asks for a failing lookup.
+        """
         self.requested_urls.append(url)
-        return self.responses[url]
+        response = self.responses[url]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     async def put(self, url, *, data, **_kwargs):
         """Record a write, raising whatever the test asked for."""

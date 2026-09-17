@@ -52,6 +52,19 @@ craft a great change note for inclusion with your pull request:
 # Identifier namespace of the "create a change note" check run buttons:
 CHANGE_NOTE_ACTION_PREFIX = 'mkfrag:'
 
+# The closing keywords GitHub itself recognises in a pull request body,
+# followed by any of the issue references it accepts:
+CLOSING_KEYWORDS_RE = re.compile(
+    r'\b(?:clos(?:e|es|ed)|fix(?:es|ed)?|resolv(?:e|es|ed))\b\s*:?\s*'
+    r'(?:'
+    r'(?P<slug>[\w.-]+/[\w.-]+)?\#'
+    r'|GH-'
+    r'|https?://github\.com/(?P<url_slug>[\w.-]+/[\w.-]+)/issues/'
+    r')'
+    r'(?P<number>\d+)\b',
+    re.IGNORECASE,
+)
+
 # The Checks API caps a check run at three actions and every action
 # identifier at 20 characters:
 MAX_CHECK_RUN_ACTIONS = 3
@@ -340,9 +353,21 @@ async def on_pr(event):
         towncrier_config=towncrier_config,
     )
 
+    change_type_requirements = repo_config.get('require-change-types') or {}
+    label_origins = (
+        await collect_requirement_labels(
+            gh_api,
+            repo_slug=repo_slug,
+            pull_request=pull_request,
+            requirements=change_type_requirements,
+        )
+        if repo_config.get('infer-labels-from-linked-issues', False)
+        else dict.fromkeys(pr_labels)
+    )
+
     unmet_change_type_requirements = find_unmet_change_type_requirements(
-        pr_labels,
-        repo_config.get('require-change-types') or {},
+        label_origins.keys(),
+        change_type_requirements,
         news_fragment_types,
     )
 
@@ -359,6 +384,7 @@ async def on_pr(event):
         fragments_required=news_fragments_required,
         fragment_re=_tc_fragment_re,
         unmet_change_type_requirements=unmet_change_type_requirements,
+        label_origins=label_origins,
     )
 
     update_check_req = attr.evolve(
@@ -575,22 +601,82 @@ async def resolve_pull_request(event, repo_slug, gh_api):
     return None
 
 
-def find_unmet_change_type_requirements(
-        pr_labels, requirements, fragment_types,
+def find_linked_issue_numbers(pr_body, repo_slug):
+    """Return the same-repo issues a pull request body says it closes.
+
+    Only the closing keywords spelled out in the description are
+    visible here -- an issue attached through the sidebar is reported
+    by the GraphQL API alone.  Cross-repository references are dropped
+    too, because the App is not necessarily installed on the other end.
+    """
+    return sorted({
+        int(match['number'])
+        for match in CLOSING_KEYWORDS_RE.finditer(pr_body or '')
+        if (match['slug'] or match['url_slug'] or repo_slug).lower()
+        == repo_slug.lower()
+    })
+
+
+async def collect_requirement_labels(
+        gh_api, *, repo_slug, pull_request, requirements,
 ):
-    """Map each PR label to the change types no added fragment covers.
+    """Map every label that gets a vote to where it was picked up.
+
+    The pull request's own labels always count and map to ``None``.  One
+    that already carries a label the config votes on speaks for itself,
+    so the issues it closes are consulted only when it carries none of
+    them -- those issues tend to be high-level and to span several pull
+    requests, which would make their labels the louder voice.
+    """
+    label_origins = {
+        label['name']: None for label in pull_request['labels']
+    }
+    if label_origins.keys() & requirements.keys():
+        return label_origins
+
+    for issue_number in find_linked_issue_numbers(
+            pull_request['body'], repo_slug,
+    ):
+        try:
+            linked_issue = await gh_api.getitem(
+                f'/repos/{repo_slug!s}/issues/{issue_number:d}',
+            )
+        except gidgethub.HTTPException as lookup_error:
+            logger.info(
+                'Ignoring the linked issue #%d, GitHub said %s',
+                issue_number,
+                lookup_error.status_code,
+            )
+            continue
+
+        for label in linked_issue['labels']:
+            label_origins.setdefault(label['name'], issue_number)
+
+    return label_origins
+
+
+def find_unmet_change_type_requirements(
+        labels, requirements, fragment_types,
+):
+    """Map each demanding label to the change types no fragment covers.
 
     ``requirements`` comes straight out of the repository config and
     maps a label name to the change types that satisfy it.  A label
-    contributes a requirement only while it is set on the pull request,
+    contributes a requirement only while it applies to the pull request,
     and a single fragment of any of the listed types settles it.
     """
     return {
         label: accepted_types
         for label, accepted_types in requirements.items()
-        if label in pr_labels
+        if label in labels
         and not fragment_types & as_change_type_set(accepted_types)
     }
+
+
+def label_origin_note(label_origins, label):
+    """Name the linked issue a demanding label was inherited from."""
+    issue_number = (label_origins or {}).get(label)
+    return '' if issue_number is None else f' (from #{issue_number:d})'
 
 
 def as_change_type_set(accepted_types):
@@ -607,11 +693,14 @@ def as_change_type_set(accepted_types):
 def build_check_result(
         *, title_prefix, epilogue, fragments_added, fragments_required,
         fragment_re, unmet_change_type_requirements=None,
+        label_origins=None,
 ):
     """Compose the Checks API conclusion and output for a scanned PR."""
     if fragments_added and unmet_change_type_requirements:
         demands = '\n'.join(
-            f'* `{label!s}` wants a change note of type '
+            f'* `{label!s}`'
+            f'{label_origin_note(label_origins, label)!s} '
+            'wants a change note of type '
             + ' or '.join(
                 f'`{change_type!s}`'
                 for change_type in sorted(as_change_type_set(accepted_types))

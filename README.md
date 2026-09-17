@@ -29,6 +29,11 @@ exclude:
   humans:
   - pyup-bot
 
+# Let the issues a pull request closes vote on the change note type
+# when the pull request itself carries none of the `require-change-types`
+# labels:
+infer-labels-from-linked-issues: false  # default: `false`
+
 labels:
   fragment-provided: change note detected  # default: `bot:chronographer:provided`, disable with `~`
   skip-changelog: skip news  # default: `bot:chronographer:skip`
@@ -69,6 +74,27 @@ This needs the App to hold the `contents: write` permission, and the
 commit lands on the head branch, so it only works while the head
 repository is still around. When the push is refused, the check run says
 so instead of failing silently.
+
+# Inheriting the demands of a linked issue
+
+Contributors label pull requests far less reliably than maintainers label
+issues, so `require-change-types` can read the labels off the issues a
+pull request closes instead. Turn it on with
+`infer-labels-from-linked-issues: true`.
+
+A pull request that already carries one of the labels the config votes on
+speaks for itself and its linked issues are never consulted -- an issue is
+often high-level and linked from several pull requests, which would make
+its labels the louder voice. Otherwise, every label of every closed issue
+joins the vote, and the check run names the issue each inherited demand
+came from.
+
+Only the closing keywords spelled out in the pull request description are
+visible -- `closes #12`, `fixes GH-12`, `resolves
+https://github.com/{owner}/{repo}/issues/12` and the like. An issue
+attached through the sidebar is reported by the GraphQL API alone, and a
+reference to another repository is dropped because the App is not
+necessarily installed there.
 
 # Running the app
 ## Local development
