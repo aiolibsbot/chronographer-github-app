@@ -1,10 +1,12 @@
 """Webhook event handlers."""
+import base64
 from datetime import datetime
 from io import StringIO
 import logging
 import re
 
 import attr
+import gidgethub
 from unidiff import PatchSet
 
 from octomachinery.app.routing import process_event, process_event_actions
@@ -46,6 +48,14 @@ CHECKS_SUMMARY_EPILOGUE_INTRO = """
 Please, refer to the following document for more details on how to
 craft a great change note for inclusion with your pull request:
 """
+
+# Identifier namespace of the "create a change note" check run buttons:
+CHANGE_NOTE_ACTION_PREFIX = 'mkfrag:'
+
+# The Checks API caps a check run at three actions and every action
+# identifier at 20 characters:
+MAX_CHECK_RUN_ACTIONS = 3
+MAX_CHANGE_TYPE_LENGTH = 20 - len(CHANGE_NOTE_ACTION_PREFIX)
 
 
 @process_event('ping')
@@ -276,14 +286,10 @@ async def on_pr(event):
     diff = PatchSet(StringIO(diff_text))
     logger.info("Here's the diff object: %r", diff)
 
-    default_branch = head_sha or repo_default_branch
-    towncrier_config = await get_towncrier_config(
-        towncrier_config_filename=paths_config.get(
-            'towncrier-config-filename',
-            None,
-        ),
-        ref=default_branch,
-    ) or {}
+    towncrier_config = await load_towncrier_config(
+        repo_config,
+        ref=head_sha or repo_default_branch,
+    )
 
     update_check_req = UpdateCheckRequest(
         name=checks_api_name,
@@ -295,12 +301,8 @@ async def on_pr(event):
         data=to_gh_query(update_check_req),
     )
 
-    enforce_name_key = (
-        'enforce-name' if 'enforce-name' in repo_config
-        else 'enforce_name'
-    )
     _tc_fragment_re = await compile_towncrier_fragments_regex(
-        name_settings=repo_config.get(enforce_name_key, {}),
+        name_settings=enforce_name_settings(repo_config),
         towncrier_config=towncrier_config,
     )
 
@@ -344,6 +346,12 @@ async def on_pr(event):
         news_fragment_types,
     )
 
+    demanded_change_types = sorted({
+        change_type
+        for accepted_types in unmet_change_type_requirements.values()
+        for change_type in as_change_type_set(accepted_types)
+    })
+
     conclusion, check_output = build_check_result(
         title_prefix=checks_summary_title_prefix,
         epilogue=checks_summary_epilogue,
@@ -359,6 +367,12 @@ async def on_pr(event):
         conclusion=conclusion,
         completed_at=f'{datetime.utcnow().isoformat()}Z',
         output=check_output,
+        # Only a failing run has something for the maintainer to fix, so
+        # that is the only one worth putting buttons on:
+        actions=build_change_note_actions(
+            demanded_types=demanded_change_types,
+            known_types=change_note_types(towncrier_config),
+        ) if conclusion == 'failure' else [],
     )
     resp = await gh_api.patch(
         check_runs_updates_uri,
@@ -368,6 +382,155 @@ async def on_pr(event):
 
     logger.info('got %s event', event.event)
     logger.info('gh_api=%s', gh_api)
+
+
+@process_event_actions('check_run', {'requested_action'})
+async def on_change_note_requested(event):
+    """Commit the change note a check run button asks for."""
+    requested_action = event.data['requested_action']['identifier']
+    if not requested_action.startswith(CHANGE_NOTE_ACTION_PREFIX):
+        logger.info(
+            'Ignoring the unknown requested action `%s`',
+            requested_action,
+        )
+        return
+
+    change_type = requested_action[len(CHANGE_NOTE_ACTION_PREFIX):]
+
+    event_repository = event.data['repository']
+    repo_slug = event_repository['full_name']
+    gh_api = RUNTIME_CONTEXT.app_installation_client
+
+    pull_request = await resolve_pull_request(event, repo_slug, gh_api)
+    if pull_request is None:
+        return  # Interrupt the webhook event processing
+
+    head = pull_request['head']
+    repo_config = await get_chronographer_config(
+        ref=event_repository['default_branch'],
+    )
+    towncrier_config = await load_towncrier_config(
+        repo_config,
+        ref=head['sha'] or event_repository['default_branch'],
+    )
+
+    # The identifier comes back from GitHub rather than from the click, but
+    # a fragment of an unknown type would not satisfy the check anyway --
+    # and this keeps a forged payload from naming a path of its choosing:
+    if change_type not in change_note_types(towncrier_config):
+        logger.info(
+            'Refusing to create a `%s` change note because towncrier '
+            'does not accept that type',
+            change_type,
+        )
+        return
+
+    if head['repo'] is None:
+        await report_change_note_failure(
+            event, gh_api, repo_slug,
+            reason='the head repository of this pull request is gone',
+        )
+        return
+
+    pr_title = pull_request['title']
+    fragment_path = change_note_path(
+        repo_config=repo_config,
+        towncrier_config=towncrier_config,
+        change_type=change_type,
+        pr_number=pull_request['number'],
+    )
+    logger.info('Creating `%s` on `%s`', fragment_path, head['ref'])
+    try:
+        await commit_change_note(
+            gh_api,
+            head=head,
+            path=fragment_path,
+            # An actually empty file would give the pull request
+            # participants no line to attach a suggested change to, so
+            # seed it with the title:
+            text=f'{pr_title!s}\n',
+            message=f'📝 Add an empty {change_type!s} change note',
+        )
+    except gidgethub.HTTPException as commit_error:
+        logger.info(
+            'Failed to create `%s`, GitHub said %s',
+            fragment_path,
+            commit_error.status_code,
+        )
+        await report_change_note_failure(
+            event, gh_api, repo_slug,
+            reason=f'pushing `{fragment_path!s}` to the head branch failed',
+        )
+        return
+
+    # The push makes GitHub send a ``synchronize`` event, and the check run
+    # it starts reports on the change note that just landed.  Nothing left
+    # to say here.
+    logger.info('Created `%s`', fragment_path)
+
+
+async def load_towncrier_config(repo_config, *, ref):
+    """Fetch the towncrier config the repository config points at."""
+    paths_config = repo_config.get(
+        'paths',
+        {'towncrier-config-filename': None},
+    )
+    return await get_towncrier_config(
+        towncrier_config_filename=paths_config.get(
+            'towncrier-config-filename',
+            None,
+        ),
+        ref=ref,
+    ) or {}
+
+
+def change_note_path(
+        *, repo_config, towncrier_config, change_type, pr_number,
+):
+    """Return the path towncrier expects this change note at."""
+    base_dir = change_note_base_dir(towncrier_config)
+    suffix = enforce_name_settings(repo_config).get('suffix', '')
+    return f'{base_dir!s}/{pr_number:d}.{change_type!s}{suffix!s}'
+
+
+async def commit_change_note(gh_api, *, head, path, text, message):
+    """Add a file to the head branch of a pull request."""
+    head_slug = head['repo']['full_name']
+    await gh_api.put(
+        f'/repos/{head_slug!s}/contents/{path!s}',
+        data={
+            'branch': head['ref'],
+            'content': base64.b64encode(text.encode()).decode(),
+            'message': message,
+        },
+    )
+
+
+async def report_change_note_failure(event, gh_api, repo_slug, *, reason):
+    """Tell the check run why its button did not produce a change note."""
+    check_run = event.data['check_run']
+    check_run_id = check_run['id']
+    now = f'{datetime.utcnow().isoformat()}Z'
+    await gh_api.patch(
+        f'/repos/{repo_slug}/check-runs/{check_run_id:d}',
+        preview_api_version='antiope',
+        data=to_gh_query(
+            UpdateCheckRequest(
+                name=check_run['name'],
+                status='completed',
+                conclusion='failure',
+                completed_at=now,
+                output={
+                    'title': 'Could not create the change note',
+                    'summary':
+                        'Sorry! The change note you asked for did not '
+                        f'happen because {reason!s}.'
+                        '\n\n'
+                        'Adding the file by hand works just as well.',
+                },
+            ),
+        ),
+    )
 
 
 async def resolve_pull_request(event, repo_slug, gh_api):
@@ -522,24 +685,72 @@ def build_check_result(
     }
 
 
+def change_note_base_dir(towncrier_config):
+    """Return the directory towncrier keeps change note fragments in."""
+    fallback_base_dir = 'news'
+    return (
+        towncrier_config.get('directory', '').rstrip('/')
+        or fallback_base_dir
+    )
+
+
+def change_note_types(towncrier_config):
+    """Return the change note types towncrier accepts, in config order."""
+    return (
+        tuple(t['directory'] for t in towncrier_config.get('type', ()))
+        or FALLBACK_CHANGE_TYPES
+    )
+
+
+def enforce_name_settings(repo_config):
+    """Return the ``enforce-name`` section, tolerating its old spelling."""
+    enforce_name_key = (
+        'enforce-name' if 'enforce-name' in repo_config
+        else 'enforce_name'
+    )
+    return repo_config.get(enforce_name_key, {})
+
+
+def build_change_note_actions(*, demanded_types, known_types):
+    """Offer up to three buttons creating an empty change note.
+
+    The Checks API only fits three actions on a check run, so the types
+    the pull request labels actually ask for come first and the ones
+    towncrier merely knows about fill whatever room is left.
+
+    Types towncrier does not know are dropped: a fragment of such a type
+    would not satisfy the very check offering to create it.  So are types
+    too long to name in an action identifier.
+    """
+    candidates = [
+        change_type for change_type in demanded_types
+        if change_type in known_types
+    ]
+    candidates += [
+        change_type for change_type in known_types
+        if change_type not in candidates
+    ]
+    return [
+        {
+            'label': change_type,
+            'description': f'Add an empty {change_type!s} change note',
+            'identifier': f'{CHANGE_NOTE_ACTION_PREFIX!s}{change_type!s}',
+        }
+        for change_type in candidates
+        if len(change_type) <= MAX_CHANGE_TYPE_LENGTH
+    ][:MAX_CHECK_RUN_ACTIONS]
+
+
 async def compile_towncrier_fragments_regex(name_settings, towncrier_config):
     """Create fragments check regex based on the towncrier config."""
     # The named placeholders below document what each chunk of the regex is
     # for, which an f-string would not:
     # pylint: disable=consider-using-f-string
-    fallback_base_dir = 'news'
-
     # e.g. ``.rst``:
     fragment_filename_suffix = re.escape(name_settings.get('suffix', ''))
 
-    base_dir = (
-        towncrier_config.get('directory', '').rstrip('/')
-        or fallback_base_dir
-    )
-    change_types = (
-        tuple(t['directory'] for t in towncrier_config.get('type', ()))
-        or FALLBACK_CHANGE_TYPES
-    )
+    base_dir = change_note_base_dir(towncrier_config)
+    change_types = change_note_types(towncrier_config)
 
     # Ref:
     # * github.com/hawkowl/towncrier/blob/ecd438c/src/towncrier/_builder.py#L58

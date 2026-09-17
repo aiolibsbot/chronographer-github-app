@@ -52,6 +52,24 @@ paths:  # relative modified file paths that do or don't need changelog mention
 ...
 ```
 
+# Creating change notes from the check run
+
+A failing check run offers up to three buttons, one per change note type,
+that commit an empty change note to the pull request branch. The file is
+seeded with the pull request title so that reviewers can refine it through
+suggested changes rather than having to write it from scratch.
+
+The types the pull request labels ask for through `require-change-types`
+come first; the rest of the towncrier types fill whatever room is left of
+the three slots the Checks API allows. A type whose name does not fit into
+an action identifier -- 13 characters, once the namespace prefix is
+accounted for -- is not offered.
+
+This needs the App to hold the `contents: write` permission, and the
+commit lands on the head branch, so it only works while the head
+repository is still around. When the push is refused, the check run says
+so instead of failing silently.
+
 # Running the app
 ## Local development
 1. Copy a dotenv config template: `cp -v .env{.example,}`

@@ -1,11 +1,24 @@
 """Tests for the helpers backing the webhook event handlers."""
 
 import asyncio
+import base64
+from http import HTTPStatus
+from types import SimpleNamespace
 
+import gidgethub
 import pytest
 
+from octomachinery.github.models.checks_api_requests import (
+    UpdateCheckRequest,
+)
+
+from chronographer import event_handlers
 from chronographer.event_handlers import (
+    build_change_note_actions,
     build_check_result,
+    change_note_base_dir,
+    change_note_types,
+    enforce_name_settings,
     compile_towncrier_fragments_regex,
     find_unmet_change_type_requirements,
     is_a_release_pr,
@@ -16,6 +29,7 @@ from chronographer.event_handlers import (
 
 from .conftest import (
     ADDED_FRAGMENT_DIFF,
+    FakeGitHubAPI,
     CHANGELOG_ADDITION_DIFF,
     make_event,
     REMOVED_FRAGMENT_DIFF,
@@ -388,3 +402,247 @@ def test_pull_request_event_needs_no_api_call(make_gh_api):
 
     assert pull_request is PULL_REQUEST_PAYLOAD
     assert not gh_api.requested_urls
+
+
+@pytest.mark.parametrize(
+    ('towncrier_config', 'expected'),
+    [
+        ({}, 'news'),
+        ({'directory': 'changelog.d/'}, 'changelog.d'),
+        ({'directory': ''}, 'news'),
+    ],
+)
+def test_change_note_base_dir(towncrier_config, expected):
+    """Check where the change notes are looked for."""
+    assert change_note_base_dir(towncrier_config) == expected
+
+
+def test_change_note_types_keeps_the_configured_order():
+    """Check that the types come back as towncrier lists them."""
+    assert change_note_types(
+        {'type': [{'directory': 'feature'}, {'directory': 'bugfix'}]},
+    ) == ('feature', 'bugfix')
+
+
+def test_change_note_types_falls_back_to_the_defaults():
+    """Check that a config without types still yields some."""
+    assert 'bugfix' in change_note_types({})
+
+
+@pytest.mark.parametrize('key', ['enforce-name', 'enforce_name'])
+def test_enforce_name_settings_accepts_both_spellings(key):
+    """Check that the legacy underscore spelling still resolves."""
+    assert enforce_name_settings({key: {'suffix': '.rst'}}) == {
+        'suffix': '.rst',
+    }
+
+
+def test_enforce_name_settings_defaults_to_empty():
+    """Check that an absent section does not blow up the callers."""
+    assert enforce_name_settings({}) == {}
+
+
+def test_actions_lead_with_the_types_the_labels_demand():
+    """Check that a demanded type outranks the rest of the config."""
+    actions = build_change_note_actions(
+        demanded_types=['feature'],
+        known_types=('bugfix', 'doc', 'feature', 'misc'),
+    )
+
+    assert [action['label'] for action in actions] == [
+        'feature', 'bugfix', 'doc',
+    ]
+
+
+def test_actions_drop_types_towncrier_does_not_know():
+    """Check that a misconfigured demand does not reach the buttons."""
+    actions = build_change_note_actions(
+        demanded_types=['typo'],
+        known_types=('bugfix',),
+    )
+
+    assert [action['label'] for action in actions] == ['bugfix']
+
+
+def test_actions_drop_types_too_long_to_identify():
+    """Check that the 20-character identifier cap is respected."""
+    actions = build_change_note_actions(
+        demanded_types=[],
+        known_types=('backwards-incompatible', 'bugfix'),
+    )
+
+    assert [action['label'] for action in actions] == ['bugfix']
+
+
+def test_actions_fit_what_the_checks_api_accepts():
+    """Check that the rendered actions survive the API model."""
+    actions = build_change_note_actions(
+        demanded_types=[],
+        known_types=('bugfix', 'doc', 'feature', 'misc', 'removal'),
+    )
+
+    assert len(actions) == 3
+    assert UpdateCheckRequest(name='Timeline protection', actions=actions)
+
+
+def test_actions_identify_the_type_they_create():
+    """Check that a click tells the handler which note to write."""
+    actions = build_change_note_actions(
+        demanded_types=['bugfix'],
+        known_types=('bugfix',),
+    )
+
+    assert actions[0]['identifier'] == 'mkfrag:bugfix'
+
+
+HEAD_REPO_SLUG = 'contributor/chronographer'
+
+
+def make_check_run_event(identifier):
+    """Build a ``requested_action`` payload pointing at a fork branch."""
+    return make_event(
+        'check_run',
+        {
+            'check_run': {
+                'check_suite': {
+                    'head_sha': 'f2114ef',
+                    'pull_requests': [],
+                },
+                'id': 42,
+                'name': 'Timeline protection',
+            },
+            'repository': {
+                'default_branch': 'devel',
+                'full_name': 'sanitizers/chronographer',
+            },
+            'requested_action': {'identifier': identifier},
+        },
+    )
+
+
+# Every keyword here names one independent thing the handler reads out
+# of its surroundings, so bundling them would only add indirection:
+# pylint: disable-next=too-many-arguments
+def run_change_note_request(
+        monkeypatch, identifier, *, gh_api=None, head_repo=True,
+        repo_config=None, towncrier_config=None,
+):
+    """Drive the button handler against a fake GitHub API."""
+    gh_api = gh_api if gh_api is not None else FakeGitHubAPI()
+    gh_api.responses.setdefault(
+        '/repos/sanitizers/chronographer/commits/f2114ef/pulls',
+        [
+            {
+                'head': {
+                    'ref': 'add-a-thing',
+                    'repo':
+                        {'full_name': HEAD_REPO_SLUG} if head_repo else None,
+                    'sha': 'f2114ef',
+                },
+                'number': 7,
+                'title': 'Add a thing',
+            },
+        ],
+    )
+
+    async def fake_chronographer_config(**_kwargs):
+        return repo_config if repo_config is not None else {}
+
+    async def fake_towncrier_config(**_kwargs):
+        return towncrier_config
+
+    monkeypatch.setattr(
+        event_handlers, 'RUNTIME_CONTEXT',
+        SimpleNamespace(app_installation_client=gh_api),
+    )
+    monkeypatch.setattr(
+        event_handlers, 'get_chronographer_config', fake_chronographer_config,
+    )
+    monkeypatch.setattr(
+        event_handlers, 'get_towncrier_config', fake_towncrier_config,
+    )
+
+    asyncio.run(
+        event_handlers.on_change_note_requested(
+            make_check_run_event(identifier),
+        ),
+    )
+    return gh_api
+
+
+def test_requested_note_lands_on_the_head_branch(monkeypatch):
+    """Check that a click commits the fragment to the contributor's fork."""
+    gh_api = run_change_note_request(monkeypatch, 'mkfrag:bugfix')
+
+    url, data = gh_api.put_calls[0]
+    assert len(gh_api.put_calls) == 1
+    assert url == f'/repos/{HEAD_REPO_SLUG}/contents/news/7.bugfix'
+    assert data['branch'] == 'add-a-thing'
+    assert base64.b64decode(data['content']).decode() == 'Add a thing\n'
+    assert not gh_api.patch_calls
+
+
+def test_requested_note_honours_the_configured_layout(monkeypatch):
+    """Check that the directory and suffix settings shape the path."""
+    gh_api = run_change_note_request(
+        monkeypatch,
+        'mkfrag:feature',
+        repo_config={'enforce-name': {'suffix': '.rst'}},
+        towncrier_config={
+            'directory': 'changelog.d/',
+            'type': [{'directory': 'feature'}],
+        },
+    )
+
+    url, _data = gh_api.put_calls[0]
+    assert url == (
+        f'/repos/{HEAD_REPO_SLUG}/contents/changelog.d/7.feature.rst'
+    )
+
+
+def test_unrelated_requested_actions_are_ignored(monkeypatch):
+    """Check that another app's button does not write anything."""
+    gh_api = run_change_note_request(monkeypatch, 'rerun-everything')
+
+    assert not gh_api.put_calls
+    assert not gh_api.requested_urls
+
+
+def test_unknown_change_types_are_refused(monkeypatch):
+    """Check that only a type towncrier accepts gets written."""
+    gh_api = run_change_note_request(
+        monkeypatch,
+        'mkfrag:bugfix',
+        towncrier_config={'type': [{'directory': 'feature'}]},
+    )
+
+    assert not gh_api.put_calls
+
+
+def test_a_gone_fork_is_reported_on_the_check_run(monkeypatch):
+    """Check that a deleted head repository explains itself."""
+    gh_api = run_change_note_request(
+        monkeypatch, 'mkfrag:bugfix', head_repo=False,
+    )
+
+    assert not gh_api.put_calls
+    url, data = gh_api.patch_calls[0]
+    assert url == '/repos/sanitizers/chronographer/check-runs/42'
+    assert data['conclusion'] == 'failure'
+    assert 'gone' in data['output']['summary']
+
+
+def test_a_rejected_push_is_reported_on_the_check_run(monkeypatch):
+    """Check that a write the app may not make is not silent."""
+    gh_api = run_change_note_request(
+        monkeypatch,
+        'mkfrag:bugfix',
+        gh_api=FakeGitHubAPI(
+            put_error=gidgethub.BadRequest(HTTPStatus.FORBIDDEN),
+        ),
+    )
+
+    url, data = gh_api.patch_calls[0]
+    assert url == '/repos/sanitizers/chronographer/check-runs/42'
+    assert data['conclusion'] == 'failure'
+    assert 'news/7.bugfix' in data['output']['summary']

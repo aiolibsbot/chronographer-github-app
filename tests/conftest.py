@@ -56,18 +56,31 @@ diff --git a/src/app.py b/src/app.py
 """
 
 
-class FakeGitHubAPI:  # pylint: disable=too-few-public-methods
-    """Record ``getitem()`` calls and replay canned responses."""
+class FakeGitHubAPI:
+    """Record the calls made against it and replay canned responses."""
 
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, put_error=None):
         """Store the URL-to-payload mapping to serve."""
         self.responses = responses or {}
+        self.put_error = put_error
         self.requested_urls = []
+        self.put_calls = []
+        self.patch_calls = []
 
     async def getitem(self, url, **_kwargs):
         """Return the canned payload registered for ``url``."""
         self.requested_urls.append(url)
         return self.responses[url]
+
+    async def put(self, url, *, data, **_kwargs):
+        """Record a write, raising whatever the test asked for."""
+        self.put_calls.append((url, data))
+        if self.put_error is not None:
+            raise self.put_error
+
+    async def patch(self, url, *, data, **_kwargs):
+        """Record a check run update."""
+        self.patch_calls.append((url, data))
 
 
 def make_event(event, data):
