@@ -7,6 +7,25 @@ on:  # yamllint disable-line rule:truthy
   pull_request:
 
 jobs:
+  lint:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - name: Install the linters pinned in the lock file
+      run: python -Im pip install -r requirements.txt
+    # The hashed lock file cannot be installed together with unpinned
+    # packages, and PyLint needs to import what the test suite imports:
+    - name: Install the test runner
+      run: python -Im pip install pytest
+    # pre-commit.ci skips the `local` PyLint hook, so this is the only
+    # place it ever runs:
+    - name: Run every pre-commit hook
+      run: python -Im pre_commit run --all-files --show-diff-on-failure
+
   test:
     name: pytest @ Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
