@@ -127,6 +127,8 @@ class FakeGitHubAPI:
         self.requested_urls = []
         self.put_calls = []
         self.patch_calls = []
+        self.post_calls = []
+        self.delete_calls = []
 
     async def getitem(self, url, **_kwargs):
         """Return the canned payload registered for ``url``.
@@ -139,6 +141,21 @@ class FakeGitHubAPI:
         if isinstance(response, Exception):
             raise response
         return response
+
+    async def getiter(self, url, **_kwargs):
+        """Yield the canned list registered for ``url``."""
+        self.requested_urls.append(url)
+        for item in self.responses.get(url, ()):
+            yield item
+
+    async def post(self, url, *, data=None, **_kwargs):
+        """Record a write against a collection endpoint."""
+        self.post_calls.append((url, data))
+        return self.responses.get(url, {})
+
+    async def delete(self, url, **_kwargs):
+        """Record a removal."""
+        self.delete_calls.append(url)
 
     async def put(self, url, *, data, **_kwargs):
         """Record a write, raising whatever the test asked for."""
