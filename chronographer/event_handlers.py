@@ -99,7 +99,9 @@ async def on_install(
 )
 @process_event_actions('check_run', {'rerequested'})
 @process_event_actions('check_suite', {'rerequested'})
-# pylint: disable=too-many-locals
+# This handler is long enough to trip both size checks and wants a
+# split, which is a refactor of its own:
+# pylint: disable=too-many-locals,too-many-statements
 async def on_pr(event):
     """React to GitHub App pull request webhook event."""
     event_repository = event.data['repository']
@@ -111,7 +113,7 @@ async def on_pr(event):
         pull_request = (
             event.data['check_run']['check_suite']['pull_requests'][0]
         )
-    elif event.event == 'check_suite':
+    else:  # `check_suite`; no other event reaches this handler
         pull_request = (
             event.data['check_suite']['pull_requests'][0]
         )
@@ -417,6 +419,9 @@ def build_check_result(
 
 async def compile_towncrier_fragments_regex(name_settings, towncrier_config):
     """Create fragments check regex based on the towncrier config."""
+    # The named placeholders below document what each chunk of the regex is
+    # for, which an f-string would not:
+    # pylint: disable=consider-using-f-string
     fallback_base_dir = 'news'
 
     # e.g. ``.rst``:
