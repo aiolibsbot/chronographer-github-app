@@ -337,57 +337,20 @@ async def on_pr(event):
         towncrier_config=towncrier_config,
     )
 
-    report_success = not news_fragments_required or news_fragments_added
+    conclusion, check_output = build_check_result(
+        title_prefix=checks_summary_title_prefix,
+        epilogue=checks_summary_epilogue,
+        fragments_added=news_fragments_added,
+        fragments_required=news_fragments_required,
+        fragment_re=_tc_fragment_re,
+    )
 
     update_check_req = attr.evolve(
         update_check_req,
         status='completed',
-        conclusion='success' if news_fragments_added else
-        'neutral' if not news_fragments_required else 'failure',
+        conclusion=conclusion,
         completed_at=f'{datetime.utcnow().isoformat()}Z',
-        output={
-            # Fragments added
-            'title': f'{checks_summary_title_prefix!s}Good to go',
-            'text':
-                'The following news fragments found: '
-                f'{news_fragments_added!r}'
-                '\n\n'
-                f'Pattern: {_tc_fragment_re}',
-            'summary':
-                'Great! This change has been recorded to the chronicles'
-                '\n\n'
-                '![You are good at keeping records! '
-                'Image source: Unsplash ID=bByhWydZLW0]'
-                '(https://source.unsplash.com/bByhWydZLW0/1600x500)'
-                f'{checks_summary_epilogue!s}',
-        } if report_success else {
-            # Fragments not added and not required either
-            'title':
-                f'{checks_summary_title_prefix!s}'
-                'Nothing to do — change note not required',
-            'summary':
-                'This PR looks like a release preparation meaning that '
-                'it removes the existing change notes and adds them to '
-                'the user-facing 📝 changelog.'
-                '\n\n'
-                'Normally, such changes do not expect a change notes '
-                'so you do not need to worry about adding one.'
-                f'{checks_summary_epilogue!s}',
-        } if not news_fragments_required else {
-            # Fragments not added but are expected
-            'title':
-                f'{checks_summary_title_prefix!s}'
-                'History fragments missing',
-            'text': f'No files matching {_tc_fragment_re} pattern added',
-            'summary':
-                'Oops... This change does not have a record in the '
-                'archives. Just as if it never happened!'
-                '\n\n'
-                '![Keeping chronicles is important! '
-                'Image source: Unsplash ID=VSE71nAZhU8]'
-                '(https://source.unsplash.com/VSE71nAZhU8/1600x500)'
-                f'{checks_summary_epilogue!s}',
-        },
+        output=check_output,
     )
     resp = await gh_api.patch(
         check_runs_updates_uri,
@@ -397,6 +360,59 @@ async def on_pr(event):
 
     logger.info('got %s event', event.event)
     logger.info('gh_api=%s', gh_api)
+
+
+def build_check_result(
+        *, title_prefix, epilogue, fragments_added, fragments_required,
+        fragment_re,
+):
+    """Compose the Checks API conclusion and output for a scanned PR."""
+    if fragments_added:
+        return 'success', {
+            'title': f'{title_prefix!s}Good to go',
+            'text':
+                'The following news fragments found: '
+                f'{fragments_added!r}'
+                '\n\n'
+                f'Pattern: {fragment_re}',
+            'summary':
+                'Great! This change has been recorded to the chronicles'
+                '\n\n'
+                '![You are good at keeping records! '
+                'Image source: Unsplash ID=bByhWydZLW0]'
+                '(https://source.unsplash.com/bByhWydZLW0/1600x500)'
+                f'{epilogue!s}',
+        }
+
+    if not fragments_required:
+        return 'neutral', {
+            'title':
+                f'{title_prefix!s}'
+                'Nothing to do — change note not required',
+            'summary':
+                'This PR looks like a release preparation meaning that '
+                'it removes the existing change notes and adds them to '
+                'the user-facing 📝 changelog.'
+                '\n\n'
+                'Normally, such changes do not expect a change notes '
+                'so you do not need to worry about adding one.'
+                f'{epilogue!s}',
+        }
+
+    return 'failure', {
+        'title':
+            f'{title_prefix!s}'
+            'History fragments missing',
+        'text': f'No files matching {fragment_re} pattern added',
+        'summary':
+            'Oops... This change does not have a record in the '
+            'archives. Just as if it never happened!'
+            '\n\n'
+            '![Keeping chronicles is important! '
+            'Image source: Unsplash ID=VSE71nAZhU8]'
+            '(https://source.unsplash.com/VSE71nAZhU8/1600x500)'
+            f'{epilogue!s}',
+    }
 
 
 async def compile_towncrier_fragments_regex(name_settings, towncrier_config):
