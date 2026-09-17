@@ -7,6 +7,7 @@ import pytest
 from chronographer.event_handlers import (
     build_check_result,
     compile_towncrier_fragments_regex,
+    find_unmet_change_type_requirements,
     is_a_release_pr,
     is_blacklisted,
     requires_changelog,
@@ -48,6 +49,13 @@ def make_fragment_re(name_settings=None, towncrier_config=None):
 def test_default_fragment_pattern(path, expected):
     """Check the default ``news/`` layout against known good and bad paths."""
     assert bool(make_fragment_re().search(path)) is expected
+
+
+def test_fragment_pattern_captures_the_change_type():
+    """Check that the pattern names the type driving the label rules."""
+    assert make_fragment_re().search(
+        'news/123.bugfix.rst',
+    ).group('fragment_type') == 'bugfix'
 
 
 def test_fragment_pattern_honours_towncrier_config():
@@ -209,6 +217,87 @@ def test_check_result_fails_when_fragments_missing():
     assert conclusion == 'failure'
     assert output['title'] == 'chng: History fragments missing'
     assert output['summary'].endswith('epilogue')
+
+
+@pytest.mark.parametrize(
+    ('pr_labels', 'fragment_types', 'expected'),
+    [
+        ({'enhancement'}, {'feature'}, {}),
+        ({'enhancement'}, {'contrib'}, {}),
+        ({'enhancement'}, {'bugfix'}, {'enhancement': ['contrib', 'feature']}),
+        ({'unrelated'}, {'bugfix'}, {}),
+        (set(), set(), {}),
+        ({'enhancement'}, {'bugfix', 'feature'}, {}),
+        (
+            {'enhancement', 'bug'},
+            {'feature'},
+            {'bug': ['bugfix']},
+        ),
+    ],
+)
+def test_unmet_change_type_requirements(pr_labels, fragment_types, expected):
+    """Check which labels are left wanting a different change note."""
+    requirements = {
+        'enhancement': ['contrib', 'feature'],
+        'bug': ['bugfix'],
+    }
+
+    assert find_unmet_change_type_requirements(
+        pr_labels, requirements, fragment_types,
+    ) == expected
+
+
+def test_change_type_requirement_accepts_a_bare_string():
+    """Check that a single change type need not be wrapped in a list.
+
+    ``{'bug': 'bugfix'}`` must not be read as a set of characters.
+    """
+    assert find_unmet_change_type_requirements(
+        {'bug'}, {'bug': 'bugfix'}, {'b'},
+    ) == {'bug': 'bugfix'}
+    assert not find_unmet_change_type_requirements(
+        {'bug'}, {'bug': 'bugfix'}, {'bugfix'},
+    )
+
+
+def test_check_result_fails_on_the_wrong_fragment_type():
+    """Check that a fragment of an unwanted type fails the check run."""
+    conclusion, output = build_check_result(
+        title_prefix='chng: ',
+        epilogue='epilogue',
+        fragments_added=['news/123.bugfix'],
+        fragments_required=True,
+        fragment_re='<re>',
+        unmet_change_type_requirements={
+            'enhancement': ['contrib', 'feature'],
+        },
+    )
+
+    assert conclusion == 'failure'
+    assert output['title'] == 'chng: History fragments of the wrong type'
+    assert '`enhancement`' in output['summary']
+    assert '`contrib` or `feature`' in output['summary']
+    assert output['summary'].endswith('epilogue')
+
+
+def test_check_result_ignores_requirements_without_fragments():
+    """Check that the plain "missing" failure wins over the type one.
+
+    An unmet requirement is meaningless while no fragment exists at
+    all -- telling the author their non-existent note is of the wrong
+    type would be nonsense.
+    """
+    conclusion, output = build_check_result(
+        title_prefix='chng: ',
+        epilogue='',
+        fragments_added=[],
+        fragments_required=True,
+        fragment_re='<re>',
+        unmet_change_type_requirements={'enhancement': ['feature']},
+    )
+
+    assert conclusion == 'failure'
+    assert output['title'] == 'chng: History fragments missing'
 
 
 def test_added_fragment_is_detected(make_diff):

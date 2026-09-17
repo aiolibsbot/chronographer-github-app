@@ -33,6 +33,17 @@ labels:
   fragment-provided: change note detected  # default: `bot:chronographer:provided`, disable with `~`
   skip-changelog: skip news  # default: `bot:chronographer:skip`
 
+# Labels that demand a change note of a particular towncrier type.  A
+# label only asks for something while it is set on the pull request, and
+# one fragment of any of the listed types settles it.  Several labels at
+# once means several demands, each needing its own fragment:
+require-change-types:
+  enhancement:
+  - contrib
+  - feature
+  bug:
+  - bugfix
+
 paths:  # relative modified file paths that do or don't need changelog mention
   exclude: []
   include: []

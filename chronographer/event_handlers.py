@@ -308,6 +308,10 @@ async def on_pr(event):
         f for f in diff
         if f.is_added_file and _tc_fragment_re.search(f.path)
     ]
+    news_fragment_types = {
+        _tc_fragment_re.search(f.path).group('fragment_type')
+        for f in news_fragments_added
+    }
     logger.info(
         'News fragments are %s',
         'present' if news_fragments_added
@@ -334,12 +338,19 @@ async def on_pr(event):
         towncrier_config=towncrier_config,
     )
 
+    unmet_change_type_requirements = find_unmet_change_type_requirements(
+        pr_labels,
+        repo_config.get('require-change-types') or {},
+        news_fragment_types,
+    )
+
     conclusion, check_output = build_check_result(
         title_prefix=checks_summary_title_prefix,
         epilogue=checks_summary_epilogue,
         fragments_added=news_fragments_added,
         fragments_required=news_fragments_required,
         fragment_re=_tc_fragment_re,
+        unmet_change_type_requirements=unmet_change_type_requirements,
     )
 
     update_check_req = attr.evolve(
@@ -401,11 +412,68 @@ async def resolve_pull_request(event, repo_slug, gh_api):
     return None
 
 
+def find_unmet_change_type_requirements(
+        pr_labels, requirements, fragment_types,
+):
+    """Map each PR label to the change types no added fragment covers.
+
+    ``requirements`` comes straight out of the repository config and
+    maps a label name to the change types that satisfy it.  A label
+    contributes a requirement only while it is set on the pull request,
+    and a single fragment of any of the listed types settles it.
+    """
+    return {
+        label: accepted_types
+        for label, accepted_types in requirements.items()
+        if label in pr_labels
+        and not fragment_types & as_change_type_set(accepted_types)
+    }
+
+
+def as_change_type_set(accepted_types):
+    """Normalise one config entry into a set of change type names."""
+    return (
+        {accepted_types} if isinstance(accepted_types, str)
+        else set(accepted_types)
+    )
+
+
+# Every argument here is keyword-only and names one independent input of
+# the rendered check run, so bundling them would only add indirection:
+# pylint: disable-next=too-many-arguments
 def build_check_result(
         *, title_prefix, epilogue, fragments_added, fragments_required,
-        fragment_re,
+        fragment_re, unmet_change_type_requirements=None,
 ):
     """Compose the Checks API conclusion and output for a scanned PR."""
+    if fragments_added and unmet_change_type_requirements:
+        demands = '\n'.join(
+            f'* `{label!s}` wants a change note of type '
+            + ' or '.join(
+                f'`{change_type!s}`'
+                for change_type in sorted(as_change_type_set(accepted_types))
+            )
+            for label, accepted_types in sorted(
+                unmet_change_type_requirements.items(),
+            )
+        )
+        return 'failure', {
+            'title':
+                f'{title_prefix!s}'
+                'History fragments of the wrong type',
+            'text':
+                'The following news fragments found: '
+                f'{fragments_added!r}'
+                '\n\n'
+                f'Pattern: {fragment_re}',
+            'summary':
+                'Close! This change is recorded, but its labels ask for '
+                'a different kind of change note:'
+                '\n\n'
+                f'{demands!s}'
+                f'{epilogue!s}',
+        }
+
     if fragments_added:
         return 'success', {
             'title': f'{title_prefix!s}Good to go',
