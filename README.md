@@ -59,6 +59,12 @@ $ python -Im pip install pytest
 $ python -Im pytest
 ```
 
+The linters run the same way, PyLint included — pre-commit.ci skips that
+one because `local` hooks cannot run there:
+```console
+$ python -Im pre_commit run --all-files
+```
+
 # Known issues/limitations
 
 * Re-requesting a check run from Checks page in PRs doesn't always work.
