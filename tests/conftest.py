@@ -1,10 +1,33 @@
 """Shared test helpers."""
 
+import asyncio
 from io import StringIO
 from types import SimpleNamespace
 
 import pytest
 from unidiff import PatchSet
+
+from chronographer.change_notes import (
+    compile_towncrier_fragments_regex,
+)
+
+
+CONTENTLESS_TOWNCRIER_CONFIG = {
+    'type': [
+        {'directory': 'bugfix', 'showcontent': True},
+        {'directory': 'trivial', 'showcontent': False},
+    ],
+}
+
+
+def make_fragment_re(name_settings=None, towncrier_config=None):
+    """Compile the fragment regex outside of an async context."""
+    return asyncio.run(
+        compile_towncrier_fragments_regex(
+            name_settings=name_settings or {},
+            towncrier_config=towncrier_config or {},
+        ),
+    )
 
 
 @pytest.fixture
