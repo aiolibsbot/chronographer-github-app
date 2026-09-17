@@ -52,6 +52,13 @@ paths:  # relative modified file paths that do or don't need changelog mention
    ```
 3. `python3.7 -m chronographer`
 
+# Running the tests
+```console
+$ python -Im pip install -r requirements.txt
+$ python -Im pip install pytest
+$ python -Im pytest
+```
+
 # Known issues/limitations
 
 * Re-requesting a check run from Checks page in PRs doesn't always work.
