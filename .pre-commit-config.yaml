@@ -49,7 +49,7 @@ repos:
   - id: debug-statements
 
 - repo: https://github.com/PyCQA/flake8.git
-  rev: 6.0.0
+  rev: 7.3.0  # `pycodestyle` < 2.11 miscounts f-string format specs
   hooks:
   - id: flake8
     alias: flake8-no-wps
@@ -62,6 +62,9 @@ repos:
     - flake8-docstrings ~= 1.6.0
     - flake8-length ~= 0.3.0
     - flake8-logging-format ~= 0.7.5
+    # `flake8-logging-format` still imports `pkg_resources`, which
+    # `setuptools` dropped in v81:
+    - setuptools < 81
     - flake8-pytest-style ~= 1.6.0
     # - flake8-spellcheck ~= 0.28.0; python_version >= "3.8"
     # - flake8-spellcheck ~= 0.26.0; python_version < "3.8"
