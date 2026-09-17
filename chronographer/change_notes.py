@@ -1,5 +1,6 @@
 """Helpers modelling towncrier change notes in a pull request diff."""
 
+import logging
 import re
 
 from .file_utils import get_towncrier_config
@@ -18,6 +19,21 @@ except ImportError:
         'trivial',
         'vendor',
     )
+
+
+logger = logging.getLogger(__name__)
+
+
+# The ``.1`` counter towncrier lets a fragment carry between its type and
+# its suffix, keyed by what ``enforce-name.number-part`` says about it.
+# Forbidding it needs a lookahead rather than an empty string: the
+# extra-suffix pattern that follows would otherwise swallow the counter.
+COUNTER_PATTERNS = {
+    'allow': r'(?:\.\d+)?',
+    'require': r'(?:\.\d+)',
+    'forbid': r'(?!\.\d+(?:\.|$))',
+}
+DEFAULT_COUNTER_POLICY = 'allow'
 
 
 async def load_towncrier_config(repo_config, *, ref):
@@ -118,6 +134,35 @@ def enforce_name_settings(repo_config):
     return repo_config.get(enforce_name_key, {})
 
 
+def counter_pattern(name_settings):
+    """Return the regex chunk covering the fragment counter part.
+
+    An unknown policy is a repository config typo rather than a reason
+    to reject every change note, so it degrades to the default.
+    """
+    policy = name_settings.get('number-part', DEFAULT_COUNTER_POLICY)
+    try:
+        return COUNTER_PATTERNS[policy]
+    except (KeyError, TypeError):
+        logger.warning(
+            'Ignoring the unknown `enforce-name.number-part` value %r -- '
+            'expected one of %s. Falling back to `%s`.',
+            policy,
+            ', '.join(sorted(COUNTER_PATTERNS)),
+            DEFAULT_COUNTER_POLICY,
+        )
+        return COUNTER_PATTERNS[DEFAULT_COUNTER_POLICY]
+
+
+def issue_number_pattern(name_settings):
+    """Return the regex chunk covering the part before the first dot."""
+    return (
+        r'(?P<issue_number>\d+)\.'
+        if name_settings.get('issue-number', False)
+        else r'(?P<issue_number>[^\./]+)\.'
+    )
+
+
 async def compile_towncrier_fragments_regex(name_settings, towncrier_config):
     """Create fragments check regex based on the towncrier config."""
     # The named placeholders below document what each chunk of the regex is
@@ -140,10 +185,10 @@ async def compile_towncrier_fragments_regex(name_settings, towncrier_config):
             r'{postfix_pattern}'
             r'$'
         ).format(
-            base_dir=base_dir,
-            file_pattern=r'(?P<issue_number>[^\./]+)\.',  # should we enforce?
+            base_dir=re.escape(base_dir),
+            file_pattern=issue_number_pattern(name_settings),
             fragment_types=r'|'.join(change_types),
-            number_pattern=r'(\.\d+)?',  # better be a number
+            number_pattern=counter_pattern(name_settings),
             suffix_pattern=r'(\.[^\./]+)*',
             postfix_pattern=fragment_filename_suffix,
         ),

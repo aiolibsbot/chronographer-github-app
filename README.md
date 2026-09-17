@@ -20,6 +20,14 @@ branch-protection-check-name: Timeline protection
 
 enforce-name:
   suffix: .rst  # can be empty or `.md` too
+  # Demand that the part before the first dot be an issue or pull
+  # request number, rejecting slugs like `news/smth-else.doc`:
+  issue-number: false  # default: `false`
+  # What to do about the counter towncrier allows between the change
+  # note type and its suffix, as in `news/42.bugfix.1.rst`:
+  # `allow` (default) tolerates it, `require` demands it and `forbid`
+  # rejects it.
+  number-part: allow  # default: `allow`
 
 exclude:
   bots:

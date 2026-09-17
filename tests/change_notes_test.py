@@ -250,3 +250,80 @@ def test_collect_change_notes_keeps_filled_note_of_rendered_type(make_diff):
 
     assert [note.path for note in accepted] == ['news/123.bugfix']
     assert not overfull
+
+
+@pytest.mark.parametrize(
+    ('path', 'expected'),
+    [
+        ('news/123.bugfix', True),
+        ('news/123.bugfix.1', True),
+        ('news/smth-else.bugfix', False),
+        ('news/v2.bugfix', False),
+    ],
+)
+def test_fragment_pattern_can_demand_an_issue_number(path, expected):
+    """Check that ``issue-number`` rejects non-numeric name parts."""
+    fragment_re = make_fragment_re(name_settings={'issue-number': True})
+
+    assert bool(fragment_re.search(path)) is expected
+
+
+def test_fragment_pattern_allows_slugs_by_default():
+    """Check that the issue number part stays free-form unless asked."""
+    assert make_fragment_re().search(
+        'news/smth-else.bugfix',
+    ).group('issue_number') == 'smth-else'
+
+
+@pytest.mark.parametrize(
+    ('policy', 'path', 'expected'),
+    [
+        ('allow', 'news/42.bugfix', True),
+        ('allow', 'news/42.bugfix.1', True),
+        ('require', 'news/42.bugfix', False),
+        ('require', 'news/42.bugfix.1', True),
+        ('forbid', 'news/42.bugfix', True),
+        ('forbid', 'news/42.bugfix.1', False),
+    ],
+)
+def test_fragment_pattern_controls_the_counter(policy, path, expected):
+    """Check every ``number-part`` policy against a counter-less name."""
+    fragment_re = make_fragment_re(name_settings={'number-part': policy})
+
+    assert bool(fragment_re.search(path)) is expected
+
+
+@pytest.mark.parametrize(
+    ('policy', 'path', 'expected'),
+    [
+        ('require', 'news/42.bugfix.rst', False),
+        ('require', 'news/42.bugfix.1.rst', True),
+        ('forbid', 'news/42.bugfix.rst', True),
+        ('forbid', 'news/42.bugfix.1.rst', False),
+    ],
+)
+def test_counter_policy_survives_a_suffix(policy, path, expected):
+    """Check that the counter rules still hold next to a suffix."""
+    fragment_re = make_fragment_re(
+        name_settings={'number-part': policy, 'suffix': '.rst'},
+    )
+
+    assert bool(fragment_re.search(path)) is expected
+
+
+def test_unknown_counter_policy_falls_back(caplog):
+    """Check that a config typo does not reject every change note."""
+    fragment_re = make_fragment_re(name_settings={'number-part': 'maybe'})
+
+    assert fragment_re.search('news/42.bugfix')
+    assert fragment_re.search('news/42.bugfix.1')
+    assert 'number-part' in caplog.text
+
+
+def test_fragment_pattern_escapes_the_base_dir():
+    """Check that a dot in the towncrier directory is not a wildcard."""
+    fragment_re = make_fragment_re(
+        towncrier_config={'directory': 'changelog.d'},
+    )
+
+    assert not fragment_re.search('changelogXd/42.bugfix')
